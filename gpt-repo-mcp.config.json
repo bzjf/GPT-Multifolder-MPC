@@ -1,0 +1,18 @@
+{
+  "installRoot": ".",
+  "projectDirName": "gpt-repo-mcp",
+  "repoUrl": "https://github.com/CAHN91/gpt-repo-mcp.git",
+
+  "repoPath": ".",
+  "repoMode": "write",
+  "allowNonGit": true,
+  "includeChildDirs": true,
+
+  "localPort": 8787,
+  "httpsPort": 443,
+
+  "useTailscaleFunnel": true,
+  "autoBuild": true,
+
+  "tokenLength": 32
+}

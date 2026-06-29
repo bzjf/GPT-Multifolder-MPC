@@ -1,0 +1,46 @@
+# Local agent artifacts
+.agent-recorder/
+.agentbus/recorder/
+.chatgpt/
+.chatgpt/backups/
+.chatgpt/operations/*.json
+.chatgpt/handoffs/*.local.md
+.chatgpt/backlog/*.local.md
+
+# Dependencies
+node_modules/
+
+# Build and coverage output
+dist/
+coverage/
+.nyc_output/
+
+# TypeScript and bundler caches
+*.tsbuildinfo
+.turbo/
+.vite/
+.cache/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Local environment and config
+.env
+.env.*
+!.env.example
+config.local.json
+*.local.json
+
+# Test artifacts
+playwright-report/
+test-results/
+
+# Editor and OS files
+.idea/
+.vscode/
+.DS_Store

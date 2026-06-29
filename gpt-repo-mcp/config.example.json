@@ -1,0 +1,8 @@
+{
+  "repos": [],
+  "limits": {
+    "max_files": 50,
+    "max_bytes_per_file": 128000,
+    "max_total_bytes": 750000
+  }
+}
