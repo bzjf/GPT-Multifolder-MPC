@@ -143,8 +143,8 @@ if /I "%AUTO_BUILD%"=="True" (
 
 echo.
 echo ====== Setup finished ======
-echo Start one-shot runtime with:
-echo %ROOT_DIR%\start-gpt-repo-mcp.cmd
+echo Start the recommended control panel with:
+echo %ROOT_DIR%\start-gpt-repo-control-panel.cmd
 echo.
 pause
 

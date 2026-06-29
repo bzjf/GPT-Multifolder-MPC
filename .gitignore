@@ -29,6 +29,12 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
+# Runtime state
+.runtime/
+
+# Local generated troubleshooting exports
+Control Panel *.pdf
+
 # Local environment and config
 .env
 .env.*

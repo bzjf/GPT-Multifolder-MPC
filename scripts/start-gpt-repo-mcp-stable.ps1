@@ -148,7 +148,9 @@ try {
     Write-Host "Keep this window open. Stop with Ctrl+C."
     Write-Host ""
 
-    & npm.cmd run --silent dev
+    $serverLog = Join-Path $runtimeDir "stable-mcp-server.log"
+    Write-Host "Log       : $serverLog"
+    & npm.cmd run --silent dev *> $serverLog
     $exitCode = $LASTEXITCODE
 }
 catch {
