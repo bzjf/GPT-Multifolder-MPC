@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import http from "node:http";
+import net from "node:net";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomInt } from "node:crypto";
 import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -41,8 +42,13 @@ function randomText(length = 32) {
   return out;
 }
 
+function resolveConfigPath(value, fallback = ".") {
+  const raw = String(value ?? fallback).trim() || fallback;
+  return path.isAbsolute(raw) ? path.normalize(raw) : path.resolve(rootDir, raw);
+}
+
 function normalizeRepoPath(repoPath) {
-  return path.resolve(repoPath).replace(/[\\/]+$/, "").toLowerCase();
+  return resolveConfigPath(repoPath).replace(/[\\/]+$/, "").toLowerCase();
 }
 
 function pathKey(repoPath) {
@@ -51,7 +57,11 @@ function pathKey(repoPath) {
 
 function loadMainConfig() {
   if (!existsSync(mainConfigPath)) throw new Error(`Missing config: ${mainConfigPath}`);
-  return readJson(mainConfigPath, {});
+  const main = readJson(mainConfigPath, {});
+  main.installRoot = resolveConfigPath(main.installRoot ?? ".");
+  main.projectDirName = String(main.projectDirName ?? "gpt-repo-mcp");
+  main.repoPath = resolveConfigPath(main.repoPath ?? ".");
+  return main;
 }
 
 function loadState() {
@@ -68,11 +78,17 @@ function instanceDir(id) {
   return path.join(runtimeRoot, "instances", id);
 }
 
+function stablePublicCodeFor(repoPath, length) {
+  const normalized = normalizeRepoPath(repoPath);
+  const digest = createHash("sha256").update(`public:${normalized}`).digest("hex");
+  return digest.slice(0, Math.max(16, Number(length) || 32));
+}
+
 function publicCodeFor(repoPath, length) {
   const key = pathKey(repoPath);
   const filePath = path.join(runtimeRoot, `public-path-code-${key}.txt`);
   if (existsSync(filePath)) return readFileSync(filePath, "utf8").trim();
-  const code = randomText(length);
+  const code = stablePublicCodeFor(repoPath, length);
   writeFileSync(filePath, `${code}\n`, "utf8");
   return code;
 }
@@ -89,7 +105,7 @@ function instanceView(item) {
   const live = runtime.get(item.id);
   return {
     ...item,
-    running: Boolean(live?.child && !live.child.killed),
+    running: Boolean(live?.child && !live.child.killed && !live.exited),
     url: live?.url ?? null,
     localUrl: live?.localUrl ?? null,
     mcp_code: live?.runtimeCode ?? null,
@@ -157,6 +173,35 @@ function listenOnAvailablePort(serverToListen, initialPort, bindHost, label, max
 
     tryListen();
   });
+}
+
+function assertPortAvailable(port, bindHost, label) {
+  return new Promise((resolve, reject) => {
+    const probe = net.createServer();
+    probe.once("error", (error) => {
+      if (error?.code === "EADDRINUSE") {
+        reject(new Error(`${label} port ${port} is already in use on ${bindHost}. Stop the existing process or choose another local port.`));
+        return;
+      }
+      reject(error);
+    });
+    probe.once("listening", () => {
+      probe.close(() => resolve());
+    });
+    probe.listen(Number(port), bindHost);
+  });
+}
+
+function openPanelInBrowser(url) {
+  if (process.env.GPT_REPO_PANEL_OPEN !== "1") return;
+  const command = process.platform === "win32" ? "cmd.exe" : process.platform === "darwin" ? "open" : "xdg-open";
+  const args = process.platform === "win32" ? ["/d", "/s", "/c", "start", "", url] : [url];
+  try {
+    const child = spawn(command, args, { detached: true, stdio: "ignore", windowsHide: true });
+    child.unref();
+  } catch (error) {
+    console.warn(`Failed to open browser: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 function runSync(command, args, options = {}) {
@@ -260,17 +305,19 @@ function forwardToInstance(req, res, item, targetPath) {
   req.pipe(proxyReq);
 }
 
-function startInstance(id) {
+async function startInstance(id) {
   const state = loadState();
   const item = state.instances.find((candidate) => candidate.id === id);
   if (!item) throw new Error(`Unknown instance: ${id}`);
   const existing = runtime.get(id);
-  if (existing?.child && !existing.child.killed) return instanceView(item);
+  if (existing?.child && !existing.child.killed && !existing.exited) return instanceView(item);
 
   const main = loadMainConfig();
   const projectDir = path.join(String(main.installRoot), String(main.projectDirName));
   if (!existsSync(path.join(projectDir, "package.json"))) throw new Error(`Project not found: ${projectDir}`);
   if (!existsSync(item.repoPath)) throw new Error(`Repo path not found: ${item.repoPath}`);
+
+  await assertPortAvailable(Number(item.localPort), "127.0.0.1", `MCP instance ${id}`);
 
   const dir = instanceDir(id);
   ensureDir(dir);
@@ -331,13 +378,15 @@ function startInstance(id) {
   child.stdout?.pipe(logStream, { end: false });
   child.stderr?.pipe(logStream, { end: false });
 
-  const live = { child, url, localUrl, runtimeCode, logPath, lastError: proxyWarning, logStream, disableToolGate };
+  const live = { child, url, localUrl, runtimeCode, logPath, lastError: proxyWarning, logStream, disableToolGate, exited: false };
   runtime.set(id, live);
   child.on("exit", (code, signal) => {
+    live.exited = true;
     live.lastError = code === 0 || signal ? null : `Exited with code ${code}`;
     logStream.end(`[control-panel] exited code=${code} signal=${signal ?? ""}\n`);
   });
   child.on("error", (error) => {
+    live.exited = true;
     live.lastError = `${error.message} (command: ${command} ${args.join(" ")}; cwd: ${projectDir}; log: ${logPath})`;
     logStream.end(`[control-panel] child error: ${error instanceof Error ? error.stack : String(error)}\n`);
   });
@@ -357,7 +406,7 @@ function stopInstance(id) {
 
 function addInstance(input) {
   const state = loadState();
-  const repoPath = path.resolve(String(input.repoPath ?? ""));
+  const repoPath = resolveConfigPath(input.repoPath, ".");
   if (!repoPath || !existsSync(repoPath)) throw new Error(`Directory does not exist: ${repoPath}`);
   const key = pathKey(repoPath);
   const id = `mcp-${key}`;
@@ -631,7 +680,7 @@ const server = http.createServer(async (req, res) => {
     const match = url.pathname.match(/^\/api\/instances\/([^/]+)(?:\/(start|stop))?$/);
     if (match && req.method === "POST" && match[2] === "start") {
       try {
-        return sendJson(res, startInstance(match[1]));
+        return sendJson(res, await startInstance(match[1]));
       } catch (error) {
         const message = rememberInstanceError(match[1], error);
         return sendJson(res, { error: message }, 500);
@@ -662,8 +711,10 @@ async function main() {
     proxyPublicBaseUrl = localProxyBaseUrl();
     console.log(`GPT Repo MCP Proxy: http://${proxyHost}:${proxyPort}`);
 
-    await listenOnAvailablePort(server, panelPort, host, "GPT Repo MCP Control Panel", 0);
-    console.log(`GPT Repo MCP Control Panel: http://${host}:${panelPort}`);
+    const actualPanelPort = await listenOnAvailablePort(server, panelPort, host, "GPT Repo MCP Control Panel", 0);
+    const panelUrl = `http://${host}:${actualPanelPort}`;
+    console.log(`GPT Repo MCP Control Panel: ${panelUrl}`);
+    openPanelInBrowser(panelUrl);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`GPT Repo MCP Control Panel failed to start: ${message}`);

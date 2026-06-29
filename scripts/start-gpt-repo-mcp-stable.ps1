@@ -49,6 +49,40 @@ function Remove-OneShotConfig {
     }
 }
 
+function Resolve-ConfigPath {
+    param(
+        [string]$PathValue,
+        [string]$Default = "."
+    )
+
+    $value = if ([string]::IsNullOrWhiteSpace($PathValue)) { $Default } else { $PathValue }
+    if ([System.IO.Path]::IsPathRooted($value)) {
+        return [System.IO.Path]::GetFullPath($value)
+    }
+    return [System.IO.Path]::GetFullPath((Join-Path $rootDir $value))
+}
+
+function New-StablePublicCode {
+    param(
+        [string]$Path,
+        [int]$Length
+    )
+
+    $fullPath = [System.IO.Path]::GetFullPath($Path)
+    $trimmed = $fullPath.TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+    $normalized = $trimmed.ToLowerInvariant()
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes("public:$normalized")
+        $hash = -join ($sha.ComputeHash($bytes) | ForEach-Object { $_.ToString("x2") })
+        $take = if ($Length -gt 0 -and $Length -lt $hash.Length) { $Length } else { 32 }
+        return $hash.Substring(0, $take)
+    }
+    finally {
+        $sha.Dispose()
+    }
+}
+
 try {
     if (-not (Test-Path -LiteralPath $configFile)) {
         throw "Config file not found: $configFile"
@@ -58,9 +92,9 @@ try {
     }
 
     $settings = Get-Content -Raw -LiteralPath $configFile | ConvertFrom-Json
-    $installRoot = [string]$settings.installRoot
-    $projectDirName = [string]$settings.projectDirName
-    $targetRepoPath = [string]$settings.repoPath
+    $installRoot = Resolve-ConfigPath -PathValue ([string]$settings.installRoot) -Default "."
+    $projectDirName = if ($settings.projectDirName) { [string]$settings.projectDirName } else { "gpt-repo-mcp" }
+    $targetRepoPath = Resolve-ConfigPath -PathValue ([string]$settings.repoPath) -Default "."
     $targetRepoMode = if ($settings.repoMode) { [string]$settings.repoMode } else { "read" }
     $allowNonGit = if ($null -ne $settings.allowNonGit) { [string]$settings.allowNonGit } else { "True" }
     $includeChildDirs = if ($null -ne $settings.includeChildDirs) { [string]$settings.includeChildDirs } else { "True" }
@@ -69,7 +103,7 @@ try {
     $httpsPort = if ($settings.stableHttpsPort) { [int]$settings.stableHttpsPort } elseif ($settings.httpsPort) { [int]$settings.httpsPort } else { 443 }
     $useFunnel = if ($null -ne $settings.useTailscaleFunnel) { [string]$settings.useTailscaleFunnel } else { "True" }
     $textLength = if ($settings.tokenLength) { [int]$settings.tokenLength } else { 32 }
-    $projectDir = Join-Path $installRoot $projectDirName
+    $projectDir = [System.IO.Path]::GetFullPath((Join-Path $installRoot $projectDirName))
 
     if (-not (Test-Path -LiteralPath (Join-Path $projectDir "package.json"))) {
         throw "Prepared gpt-repo-mcp project not found: $projectDir"
@@ -99,7 +133,7 @@ try {
     if (Test-Path -LiteralPath $publicPathFile) {
         $publicPathCode = (Get-Content -Raw -LiteralPath $publicPathFile).Trim()
     } else {
-        $publicPathCode = New-RandomText -Length $textLength
+        $publicPathCode = New-StablePublicCode -Path $targetRepoPath -Length $textLength
         [System.IO.File]::WriteAllText($publicPathFile, "$publicPathCode`n", [System.Text.UTF8Encoding]::new($false))
     }
     $runtimeCode = New-RandomText -Length $textLength
