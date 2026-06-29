@@ -211,6 +211,230 @@ function runSync(command, args, options = {}) {
   return result.stdout;
 }
 
+function parseCsvLine(line) {
+  const cells = [];
+  let current = "";
+  let quoted = false;
+  for (let i = 0; i < line.length; i += 1) {
+    const char = line[i];
+    if (char === '"' && line[i + 1] === '"') {
+      current += '"';
+      i += 1;
+      continue;
+    }
+    if (char === '"') {
+      quoted = !quoted;
+      continue;
+    }
+    if (char === "," && !quoted) {
+      cells.push(current);
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+  cells.push(current);
+  return cells;
+}
+
+function isValidPort(value) {
+  const port = Number(value);
+  return Number.isInteger(port) && port >= 1 && port <= 65535;
+}
+
+function parsePortFilter(raw) {
+  const text = String(raw ?? "").trim();
+  if (!text) return null;
+  const ports = new Set();
+  for (const part of text.split(/[,\s]+/)) {
+    if (!part) continue;
+    const range = part.match(/^(\d{1,5})-(\d{1,5})$/);
+    if (range) {
+      const start = Number(range[1]);
+      const end = Number(range[2]);
+      if (!isValidPort(start) || !isValidPort(end) || end < start) throw new Error(`Invalid port range: ${part}`);
+      if (end - start > 2000) throw new Error(`Port range is too large: ${part}`);
+      for (let port = start; port <= end; port += 1) ports.add(port);
+      continue;
+    }
+    const port = Number(part);
+    if (!isValidPort(port)) throw new Error(`Invalid port: ${part}`);
+    ports.add(port);
+  }
+  return ports;
+}
+
+function portFromAddress(address) {
+  const text = String(address ?? "").trim();
+  const bracketMatch = text.match(/\]:(\d+)$/);
+  if (bracketMatch) return Number(bracketMatch[1]);
+  const suffixMatch = text.match(/:(\d+)$/);
+  return suffixMatch ? Number(suffixMatch[1]) : null;
+}
+
+function processNameMap() {
+  const names = new Map();
+  if (process.platform === "win32") {
+    try {
+      const raw = runSync("tasklist", ["/FO", "CSV", "/NH"]);
+      for (const line of raw.split(/\r?\n/)) {
+        if (!line.trim()) continue;
+        const cells = parseCsvLine(line);
+        const pid = Number(cells[1]);
+        if (Number.isInteger(pid)) names.set(pid, cells[0]);
+      }
+    } catch {}
+    return names;
+  }
+  try {
+    const raw = runSync("ps", ["-axo", "pid=,comm="]);
+    for (const line of raw.split(/\r?\n/)) {
+      const match = line.trim().match(/^(\d+)\s+(.+)$/);
+      if (match) names.set(Number(match[1]), match[2]);
+    }
+  } catch {}
+  return names;
+}
+
+function listWindowsOccupiedPorts(portSet, names) {
+  const raw = runSync("netstat", ["-ano"]);
+  const rows = [];
+  for (const line of raw.split(/\r?\n/)) {
+    const parts = line.trim().split(/\s+/);
+    const protocol = parts[0];
+    if (protocol !== "TCP" && protocol !== "UDP") continue;
+    if (parts.length < 4) continue;
+
+    const localAddress = parts[1];
+    const port = portFromAddress(localAddress);
+    if (!isValidPort(port) || (portSet && !portSet.has(port))) continue;
+
+    const state = protocol === "TCP" ? parts[3] : "UDP";
+    const pidText = protocol === "TCP" ? parts[4] : parts[3];
+    const pid = Number(pidText);
+    rows.push({
+      protocol,
+      localAddress,
+      port,
+      state: state || protocol,
+      pid: Number.isInteger(pid) ? pid : null,
+      processName: names.get(pid) ?? null
+    });
+  }
+  return rows;
+}
+
+function localSideFromConnectionName(name) {
+  return String(name ?? "")
+    .replace(/\s+\([^)]+\)$/, "")
+    .split("->")[0]
+    .trim();
+}
+
+function listUnixOccupiedPorts(portSet, names) {
+  try {
+    const raw = runSync("lsof", ["-nP", "-iTCP", "-iUDP"]);
+    const rows = [];
+    for (const line of raw.split(/\r?\n/).slice(1)) {
+      const parts = line.trim().split(/\s+/);
+      if (parts.length < 9) continue;
+      const pid = Number(parts[1]);
+      const protocol = parts[7]?.toUpperCase().startsWith("UDP") ? "UDP" : "TCP";
+      const name = parts.slice(8).join(" ");
+      const localAddress = localSideFromConnectionName(name);
+      const port = portFromAddress(localAddress);
+      if (!isValidPort(port) || (portSet && !portSet.has(port))) continue;
+      const stateMatch = name.match(/\(([^)]+)\)$/);
+      rows.push({
+        protocol,
+        localAddress,
+        port,
+        state: stateMatch?.[1] ?? protocol,
+        pid: Number.isInteger(pid) ? pid : null,
+        processName: parts[0] || names.get(pid) || null
+      });
+    }
+    return rows;
+  } catch {}
+
+  const raw = runSync("ss", ["-tunap"]);
+  const rows = [];
+  for (const line of raw.split(/\r?\n/).slice(1)) {
+    const parts = line.trim().split(/\s+/);
+    const protocol = parts[0]?.toUpperCase();
+    if (protocol !== "TCP" && protocol !== "UDP") continue;
+    if (parts.length < 5) continue;
+    const state = parts[1] || protocol;
+    const localAddress = protocol === "UDP" ? parts[4] : parts[4];
+    const port = portFromAddress(localAddress);
+    if (!isValidPort(port) || (portSet && !portSet.has(port))) continue;
+    const processMatch = line.match(/users:\(\("([^"]+)",pid=(\d+)/);
+    const pid = processMatch ? Number(processMatch[2]) : null;
+    rows.push({
+      protocol,
+      localAddress,
+      port,
+      state,
+      pid: Number.isInteger(pid) ? pid : null,
+      processName: processMatch?.[1] ?? (Number.isInteger(pid) ? names.get(pid) : null) ?? null
+    });
+  }
+  return rows;
+}
+
+function listOccupiedPorts(portSet) {
+  if (!(portSet instanceof Set) || portSet.size === 0) return [];
+  const names = processNameMap();
+  const rows = process.platform === "win32"
+    ? listWindowsOccupiedPorts(portSet, names)
+    : listUnixOccupiedPorts(portSet, names);
+  const deduped = new Map();
+  for (const row of rows) deduped.set(`${row.protocol}:${row.localAddress}:${row.state}:${row.pid ?? ""}`, row);
+  return [...deduped.values()].sort((a, b) => a.port - b.port || String(a.protocol).localeCompare(String(b.protocol)) || Number(a.pid ?? 0) - Number(b.pid ?? 0));
+}
+
+function suggestedPorts() {
+  const ports = new Set([Number(panelPort), Number(proxyPort)]);
+  try {
+    const state = loadState();
+    for (const item of state.instances) if (isValidPort(item.localPort)) ports.add(Number(item.localPort));
+  } catch {}
+  return [...ports].filter(isValidPort).sort((a, b) => a - b);
+}
+
+function portsView(rawPorts) {
+  const query = String(rawPorts ?? "").trim();
+  const portSet = query ? parsePortFilter(query) : new Set();
+  return {
+    checkedAt: new Date().toISOString(),
+    platform: process.platform,
+    query,
+    suggestedPorts: suggestedPorts(),
+    ports: query ? listOccupiedPorts(portSet) : []
+  };
+}
+
+function terminateProcessForPort(input) {
+  const pid = Number(input?.pid);
+  if (!Number.isInteger(pid) || pid <= 0) throw new Error(`Invalid PID: ${input?.pid}`);
+  if (pid === process.pid) throw new Error("Refusing to terminate the control panel process itself.");
+  if (pid <= 4) throw new Error(`Refusing to terminate protected/system PID: ${pid}`);
+
+  const port = input?.port == null || input.port === "" ? null : Number(input.port);
+  if (port != null) {
+    if (!isValidPort(port)) throw new Error(`Invalid port: ${input.port}`);
+    const ownsPort = listOccupiedPorts(new Set([port])).some((row) => row.pid === pid);
+    if (!ownsPort) throw new Error(`PID ${pid} is not currently using port ${port}. Refresh and try again.`);
+  }
+
+  if (process.platform === "win32") {
+    runSync("taskkill", ["/PID", String(pid), "/F"]);
+  } else {
+    process.kill(pid, "SIGTERM");
+  }
+  return { ok: true, pid, port, terminatedAt: new Date().toISOString() };
+}
+
 function syncConfig(item, main, configPath) {
   const syncScript = path.join(scriptDir, "sync-repo-config.ps1");
   runSync("powershell", [
@@ -466,13 +690,27 @@ const html = `<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>GPT Repo MCP Control Panel</title>
 <style>
-:root{color-scheme:dark}*{box-sizing:border-box}body{font-family:Segoe UI,Arial,sans-serif;margin:0;background:#111827;color:#e5e7eb}main{max-width:1180px;margin:0 auto;padding:28px}.card{background:#0f172a;border:1px solid #243244;border-radius:8px;padding:18px;margin:16px 0}h1{margin:0 0 8px;font-size:26px}h2{margin:0 0 14px;font-size:18px}.muted{color:#94a3b8}input,select{background:#0b1220;color:#e5e7eb;border:1px solid #334155;border-radius:8px;padding:10px;width:100%}label{display:block;font-size:13px;color:#bfdbfe;margin:0 0 6px}input[type="checkbox"]{width:auto}.checkline{display:flex;align-items:center;gap:8px;min-height:39px}.checkline label{margin:0;color:#e5e7eb}.grid{display:grid;grid-template-columns:2fr 120px 120px 150px 120px;gap:12px;align-items:end}button{background:#2563eb;color:white;border:0;border-radius:8px;padding:10px 13px;cursor:pointer;white-space:nowrap}button.secondary{background:#334155}button.danger{background:#dc2626}table{width:100%;border-collapse:collapse;font-size:14px}th,td{border-bottom:1px solid #243244;padding:12px;text-align:left;vertical-align:top}code{background:#020617;border:1px solid #1e293b;border-radius:7px;padding:3px 6px;word-break:break-all}.ok{color:#86efac}.off{color:#fca5a5}.row-actions{display:flex;gap:8px;flex-wrap:wrap}.small{font-size:12px}.url{max-width:360px}.code{max-width:280px}@media(max-width:900px){main{padding:16px}.grid{grid-template-columns:1fr}table{display:block;overflow:auto}}
+:root{color-scheme:dark}*{box-sizing:border-box}body{font-family:Segoe UI,Arial,sans-serif;margin:0;background:#111827;color:#e5e7eb}main{max-width:1180px;margin:0 auto;padding:28px}.card{background:#0f172a;border:1px solid #243244;border-radius:8px;padding:18px;margin:16px 0}h1{margin:0 0 8px;font-size:26px}h2{margin:0 0 14px;font-size:18px}.muted{color:#94a3b8}input,select{background:#0b1220;color:#e5e7eb;border:1px solid #334155;border-radius:8px;padding:10px;width:100%}label{display:block;font-size:13px;color:#bfdbfe;margin:0 0 6px}input[type="checkbox"]{width:auto}.checkline{display:flex;align-items:center;gap:8px;min-height:39px}.checkline label{margin:0;color:#e5e7eb}.grid{display:grid;grid-template-columns:2fr 120px 120px 150px 120px;gap:12px;align-items:end}.port-grid{display:grid;grid-template-columns:1fr auto auto;gap:12px;align-items:end}.nowrap{white-space:nowrap}button{background:#2563eb;color:white;border:0;border-radius:8px;padding:10px 13px;cursor:pointer;white-space:nowrap}button.secondary{background:#334155}button.danger{background:#dc2626}table{width:100%;border-collapse:collapse;font-size:14px}th,td{border-bottom:1px solid #243244;padding:12px;text-align:left;vertical-align:top}code{background:#020617;border:1px solid #1e293b;border-radius:7px;padding:3px 6px;word-break:break-all}.ok{color:#86efac}.off{color:#fca5a5}.row-actions{display:flex;gap:8px;flex-wrap:wrap}.small{font-size:12px}.url{max-width:360px}.code{max-width:280px}@media(max-width:900px){main{padding:16px}.grid,.port-grid{grid-template-columns:1fr}table{display:block;overflow:auto}}
 </style>
 </head>
 <body>
 <main>
   <h1>GPT Repo MCP Control Panel</h1>
   <div id="state" class="muted">Loading...</div>
+
+  <section class="card">
+    <h2>Port Monitor</h2>
+    <div class="port-grid">
+      <div><label for="portQuery">Ports to check</label><input id="portQuery" placeholder="Enter ports, e.g. 8787-8810,9000" /></div>
+      <div><button type="button" onclick="refreshPorts()">Refresh Ports</button></div>
+      <div><button type="button" class="secondary" onclick="useSuggestedPorts()">Panel Ports</button></div>
+    </div>
+    <div id="portsStatus" class="muted small" style="margin-top:10px">Enter a port or range to query.</div>
+    <table id="portTable" style="display:none">
+      <thead><tr><th>Port</th><th>PID</th><th>Process</th><th>Protocol</th><th>Address</th><th>Action</th></tr></thead>
+      <tbody id="portRows"></tbody>
+    </table>
+  </section>
 
   <section class="card">
     <h2>Add Instance</h2>
@@ -519,6 +757,87 @@ function setStatus(message, isError){
   var stateEl = document.getElementById('state');
   stateEl.textContent = message;
   stateEl.className = isError ? 'off' : 'muted';
+}
+function setPortsStatus(message, isError){
+  var stateEl = document.getElementById('portsStatus');
+  stateEl.textContent = message;
+  stateEl.className = isError ? 'off small' : 'muted small';
+}
+function clearPorts(message){
+  document.getElementById('portRows').replaceChildren();
+  document.getElementById('portTable').style.display = 'none';
+  setPortsStatus(message || 'Enter a port or range to query.', false);
+}
+function renderPorts(data){
+  var rows = document.getElementById('portRows');
+  rows.replaceChildren();
+  document.getElementById('portTable').style.display = '';
+  var items = data.ports || [];
+  if (!items.length) {
+    var row = document.createElement('tr');
+    var cell = document.createElement('td');
+    cell.colSpan = 6;
+    cell.className = 'muted';
+    cell.textContent = 'No TCP/UDP port usage found for this filter.';
+    row.appendChild(cell);
+    rows.appendChild(row);
+    return;
+  }
+  items.forEach(function(item){
+    var row = document.createElement('tr');
+    setCell(row, item.port, 'nowrap');
+    setCell(row, item.pid || 'unknown', 'nowrap');
+    setCell(row, item.processName || 'unknown');
+    setCell(row, item.protocol + ' ' + item.state, 'nowrap');
+    var addrCell = document.createElement('td');
+    addrCell.appendChild(makeCode(item.localAddress));
+    row.appendChild(addrCell);
+    var actionCell = document.createElement('td');
+    if (item.pid) {
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'danger';
+      btn.dataset.pid = item.pid;
+      btn.dataset.port = item.port;
+      btn.textContent = 'Kill PID';
+      actionCell.appendChild(btn);
+    } else {
+      actionCell.textContent = 'PID unavailable';
+    }
+    row.appendChild(actionCell);
+    rows.appendChild(row);
+  });
+}
+async function refreshPorts(){
+  var query = document.getElementById('portQuery').value.trim();
+  if (!query) {
+    clearPorts('Enter a port or range to query. Empty input does not query anything.');
+    return;
+  }
+  try {
+    var data = await api('/api/ports?ports=' + encodeURIComponent(query));
+    window.__suggestedPorts = data.suggestedPorts || [];
+    setPortsStatus('Checked ' + data.ports.length + ' TCP/UDP port usage row(s) at ' + data.checkedAt + ' on ' + data.platform + '.', false);
+    renderPorts(data);
+  } catch (error) {
+    setPortsStatus('Port refresh failed: ' + (error && error.message ? error.message : error), true);
+  }
+}
+function useSuggestedPorts(){
+  var ports = window.__suggestedPorts || [];
+  document.getElementById('portQuery').value = ports.join(',');
+  refreshPorts();
+}
+async function killPortPid(pid, port){
+  if (!confirm('Kill PID ' + pid + ' that is occupying port ' + port + '?')) return;
+  try {
+    setPortsStatus('Terminating PID ' + pid + ' ...', false);
+    await api('/api/ports/' + encodeURIComponent(pid) + '/kill', { method: 'POST', body: JSON.stringify({ port: Number(port) }) });
+    await refreshPorts();
+  } catch (error) {
+    try { await refreshPorts(); } catch {}
+    setPortsStatus('Kill failed: ' + (error && error.message ? error.message : error), true);
+  }
 }
 function renderRows(items){
   var rows = document.getElementById('rows');
@@ -594,6 +913,8 @@ function renderRows(items){
 async function refresh(){
   try {
     var data = await api('/api/state');
+    var suggested = [data.panel && data.panel.port, data.proxy && data.proxy.port].concat((data.instances || []).map(function(item){ return item.localPort; }));
+    window.__suggestedPorts = suggested.filter(function(port, index, all){ return port && all.indexOf(port) === index; });
     setStatus('Panel: http://' + data.panel.host + ':' + data.panel.port + ' | Proxy: ' + data.proxy.publicBaseUrl, false);
     renderRows(data.instances || []);
   } catch (error) {
@@ -658,11 +979,18 @@ document.getElementById('rows').addEventListener('click', function(event){
   if (btn.dataset.action === 'stop') stopInstance(btn.dataset.id);
   if (btn.dataset.action === 'remove') removeInstance(btn.dataset.id);
 });
+document.getElementById('portRows').addEventListener('click', function(event){
+  var btn = event.target.closest('button[data-pid][data-port]');
+  if (!btn) return;
+  killPortPid(btn.dataset.pid, btn.dataset.port);
+});
 window.addEventListener('error', function(event){
   setStatus('UI error: ' + event.message, true);
 });
 refresh();
+clearPorts('Enter a port or range to query. Empty input does not query anything.');
 setInterval(refresh, 3000);
+setInterval(refreshPorts, 5000);
 </script>
 </body>
 </html>`;
@@ -676,6 +1004,9 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.method === "GET" && url.pathname === "/api/state") return sendJson(res, listView());
+    if (req.method === "GET" && url.pathname === "/api/ports") return sendJson(res, portsView(url.searchParams.get("ports")));
+    const portKillMatch = url.pathname.match(/^\/api\/ports\/(\d+)\/kill$/);
+    if (portKillMatch && req.method === "POST") return sendJson(res, terminateProcessForPort({ ...(await readBody(req)), pid: portKillMatch[1] }));
     if (req.method === "POST" && url.pathname === "/api/instances") return sendJson(res, addInstance(await readBody(req)));
     const match = url.pathname.match(/^\/api\/instances\/([^/]+)(?:\/(start|stop))?$/);
     if (match && req.method === "POST" && match[2] === "start") {
