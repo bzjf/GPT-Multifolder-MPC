@@ -19,6 +19,8 @@ let proxyPublicBaseUrl = localProxyBaseUrl();
 let proxyFunnelStarted = false;
 const host = "127.0.0.1";
 const runtime = new Map();
+const nodePortsCacheMs = 3000;
+let nodePortsCache = { at: 0, value: null };
 
 function ensureDir(dir) {
   mkdirSync(dir, { recursive: true });
@@ -414,6 +416,103 @@ function portsView(rawPorts) {
   };
 }
 
+function isNodeProcessName(name) {
+  const normalized = String(name ?? "").trim().toLowerCase();
+  return normalized === "node.exe" || normalized === "node";
+}
+
+function listWindowsNodePidMap() {
+  const names = new Map();
+  const raw = runSync("tasklist", ["/FI", "IMAGENAME eq node.exe", "/FO", "CSV", "/NH"]);
+  for (const line of raw.split(/\r?\n/)) {
+    if (!line.trim() || line.startsWith("INFO:")) continue;
+    const cells = parseCsvLine(line);
+    const pid = Number(cells[1]);
+    if (Number.isInteger(pid)) names.set(pid, cells[0] || "node.exe");
+  }
+  return names;
+}
+
+function listWindowsNodePorts() {
+  const names = listWindowsNodePidMap();
+  if (names.size === 0) return [];
+  const raw = runSync("netstat", ["-ano"]);
+  const rows = [];
+  const seen = new Set();
+  for (const line of raw.split(/\r?\n/)) {
+    const parts = line.trim().split(/\s+/);
+    const protocol = parts[0];
+    if (protocol !== "TCP" && protocol !== "UDP") continue;
+    if (parts.length < 4) continue;
+
+    const state = protocol === "TCP" ? parts[3] : "UDP";
+    if (protocol === "TCP" && state !== "LISTENING") continue;
+
+    const pidText = protocol === "TCP" ? parts[4] : parts[3];
+    const pid = Number(pidText);
+    if (!names.has(pid)) continue;
+
+    const localAddress = parts[1];
+    const port = portFromAddress(localAddress);
+    if (!isValidPort(port)) continue;
+
+    const key = `${protocol}:${localAddress}:${pid}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    rows.push({
+      protocol,
+      localAddress,
+      port,
+      state,
+      pid,
+      processName: names.get(pid) ?? "node.exe"
+    });
+  }
+  return rows;
+}
+
+function listNodePorts() {
+  if (process.platform === "win32") return listWindowsNodePorts();
+  return listOccupiedPorts(new Set(suggestedPorts())).filter((row) => isNodeProcessName(row.processName));
+}
+
+function nodePortsView() {
+  const now = Date.now();
+  if (nodePortsCache.value && now - nodePortsCache.at < nodePortsCacheMs) return { ...nodePortsCache.value, cached: true };
+  const ports = listNodePorts().sort((a, b) => a.port - b.port || Number(a.pid ?? 0) - Number(b.pid ?? 0));
+  const value = { checkedAt: new Date().toISOString(), platform: process.platform, cached: false, ports };
+  nodePortsCache = { at: now, value };
+  return value;
+}
+
+function invalidateNodePortsCache() {
+  nodePortsCache = { at: 0, value: null };
+}
+
+function assertStartupPortFree(port) {
+  const occupants = listOccupiedPorts(new Set([Number(port)]));
+  if (occupants.length === 0) return;
+  const detail = occupants.map((row) => `${row.protocol} ${row.localAddress} pid=${row.pid ?? "unknown"} process=${row.processName ?? "unknown"}`).join("; ");
+  const error = new Error(`Port ${port} is already occupied: ${detail}`);
+  error.status = 409;
+  error.portConflict = { port: Number(port), occupants };
+  throw error;
+}
+
+function terminateNodeProcessForPort(input) {
+  const pid = Number(input?.pid);
+  const port = Number(input?.port);
+  if (!Number.isInteger(pid) || !isValidPort(port)) throw new Error("Invalid node port termination request.");
+  if (process.platform === "win32") {
+    const matches = listWindowsNodePorts().filter((row) => row.pid === pid && row.port === port);
+    if (matches.length === 0) throw new Error(`PID ${pid} is not a node.exe process currently using port ${port}. Refresh and try again.`);
+  }
+  const result = terminateProcessForPort({ pid, port });
+  invalidateNodePortsCache();
+  return result;
+}
+
 function terminateProcessForPort(input) {
   const pid = Number(input?.pid);
   if (!Number.isInteger(pid) || pid <= 0) throw new Error(`Invalid PID: ${input?.pid}`);
@@ -428,7 +527,7 @@ function terminateProcessForPort(input) {
   }
 
   if (process.platform === "win32") {
-    runSync("taskkill", ["/PID", String(pid), "/F"]);
+    runSync("taskkill", ["/PID", String(pid), "/T", "/F"]);
   } else {
     process.kill(pid, "SIGTERM");
   }
@@ -541,6 +640,7 @@ async function startInstance(id) {
   if (!existsSync(path.join(projectDir, "package.json"))) throw new Error(`Project not found: ${projectDir}`);
   if (!existsSync(item.repoPath)) throw new Error(`Repo path not found: ${item.repoPath}`);
 
+  assertStartupPortFree(Number(item.localPort));
   await assertPortAvailable(Number(item.localPort), "127.0.0.1", `MCP instance ${id}`);
 
   const dir = instanceDir(id);
@@ -624,6 +724,7 @@ function stopInstance(id) {
   const live = runtime.get(id);
   if (live?.child && !live.child.killed) live.child.kill();
   if (live?.logStream && !live.logStream.destroyed) live.logStream.end();
+  invalidateNodePortsCache();
   runtime.delete(id);
   return item ? instanceView(item) : { id, running: false };
 }
@@ -699,13 +800,9 @@ const html = `<!doctype html>
   <div id="state" class="muted">Loading...</div>
 
   <section class="card">
-    <h2>Port Monitor</h2>
-    <div class="port-grid">
-      <div><label for="portQuery">Ports to check</label><input id="portQuery" placeholder="Enter ports, e.g. 8787-8810,9000" /></div>
-      <div><button type="button" onclick="refreshPorts()">Refresh Ports</button></div>
-      <div><button type="button" class="secondary" onclick="useSuggestedPorts()">Panel Ports</button></div>
-    </div>
-    <div id="portsStatus" class="muted small" style="margin-top:10px">Enter a port or range to query.</div>
+    <h2>Node.exe Ports</h2>
+    <div class="muted small">Only Node.js ports are shown. This list refreshes automatically.</div>
+    <div id="portsStatus" class="muted small" style="margin-top:10px">Loading Node.js ports...</div>
     <table id="portTable" style="display:none">
       <thead><tr><th>Port</th><th>PID</th><th>Process</th><th>Protocol</th><th>Address</th><th>Action</th></tr></thead>
       <tbody id="portRows"></tbody>
@@ -737,7 +834,12 @@ async function api(path, options){
   var res = await fetch(path, Object.assign({ headers: { 'content-type': 'application/json' } }, options));
   var text = await res.text();
   var data = text ? JSON.parse(text) : {};
-  if (!res.ok) throw new Error(data.error || data.message || text || 'Request failed');
+  if (!res.ok) {
+    var error = new Error(data.error || data.message || text || 'Request failed');
+    error.data = data;
+    error.status = res.status;
+    throw error;
+  }
   return data;
 }
 function text(value){ return value == null ? '' : String(value); }
@@ -778,7 +880,7 @@ function renderPorts(data){
     var cell = document.createElement('td');
     cell.colSpan = 6;
     cell.className = 'muted';
-    cell.textContent = 'No TCP/UDP port usage found for this filter.';
+    cell.textContent = 'No Node.js port usage found.';
     row.appendChild(cell);
     rows.appendChild(row);
     return;
@@ -809,30 +911,37 @@ function renderPorts(data){
   });
 }
 async function refreshPorts(){
-  var query = document.getElementById('portQuery').value.trim();
-  if (!query) {
-    clearPorts('Enter a port or range to query. Empty input does not query anything.');
-    return;
-  }
+  if (window.__portsRefreshInFlight) return;
+  window.__portsRefreshInFlight = true;
+
   try {
-    var data = await api('/api/ports?ports=' + encodeURIComponent(query));
-    window.__suggestedPorts = data.suggestedPorts || [];
-    setPortsStatus('Checked ' + data.ports.length + ' TCP/UDP port usage row(s) at ' + data.checkedAt + ' on ' + data.platform + '.', false);
-    renderPorts(data);
+    var data = await api('/api/node-ports');
+    var ports = Array.isArray(data.ports) ? data.ports : [];
+    var cacheLabel = data.cached ? ' cached' : '';
+
+    setPortsStatus(
+      'Checked ' + ports.length +
+      ' Node.js port row(s)' + cacheLabel +
+      ' at ' + (data.checkedAt || 'unknown time') +
+      ' on ' + (data.platform || 'unknown platform') + '.',
+      false
+    );
+
+    renderPorts(Object.assign({}, data, { ports: ports }));
   } catch (error) {
-    setPortsStatus('Port refresh failed: ' + (error && error.message ? error.message : error), true);
+    setPortsStatus(
+      'Node.js port refresh failed: ' + (error && error.message ? error.message : error),
+      true
+    );
+  } finally {
+    window.__portsRefreshInFlight = false;
   }
-}
-function useSuggestedPorts(){
-  var ports = window.__suggestedPorts || [];
-  document.getElementById('portQuery').value = ports.join(',');
-  refreshPorts();
 }
 async function killPortPid(pid, port){
   if (!confirm('Kill PID ' + pid + ' that is occupying port ' + port + '?')) return;
   try {
     setPortsStatus('Terminating PID ' + pid + ' ...', false);
-    await api('/api/ports/' + encodeURIComponent(pid) + '/kill', { method: 'POST', body: JSON.stringify({ port: Number(port) }) });
+    await api('/api/node-ports/' + encodeURIComponent(pid) + '/kill', { method: 'POST', body: JSON.stringify({ port: Number(port) }) });
     await refreshPorts();
   } catch (error) {
     try { await refreshPorts(); } catch {}
@@ -946,8 +1055,10 @@ async function startInstance(id){
     setStatus('Starting instance ' + id + ' ...', false);
     await api('/api/instances/' + encodeURIComponent(id) + '/start', { method: 'POST' });
     await refresh();
+    await refreshPorts();
   } catch (error) {
     try { await refresh(); } catch {}
+    window.alert('Start failed: ' + (error && error.message ? error.message : error));
     setStatus('Start failed: ' + (error && error.message ? error.message : error), true);
   }
 }
@@ -956,6 +1067,7 @@ async function stopInstance(id){
     setStatus('Stopping instance ' + id + ' ...', false);
     await api('/api/instances/' + encodeURIComponent(id) + '/stop', { method: 'POST' });
     await refresh();
+    await refreshPorts();
   } catch (error) {
     try { await refresh(); } catch {}
     setStatus('Stop failed: ' + (error && error.message ? error.message : error), true);
@@ -988,7 +1100,7 @@ window.addEventListener('error', function(event){
   setStatus('UI error: ' + event.message, true);
 });
 refresh();
-clearPorts('Enter a port or range to query. Empty input does not query anything.');
+refreshPorts();
 setInterval(refresh, 3000);
 setInterval(refreshPorts, 5000);
 </script>
@@ -1005,6 +1117,9 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === "GET" && url.pathname === "/api/state") return sendJson(res, listView());
     if (req.method === "GET" && url.pathname === "/api/ports") return sendJson(res, portsView(url.searchParams.get("ports")));
+    if (req.method === "GET" && url.pathname === "/api/node-ports") return sendJson(res, nodePortsView());
+    const nodePortKillMatch = url.pathname.match(/^\/api\/node-ports\/(\d+)\/kill$/);
+    if (nodePortKillMatch && req.method === "POST") return sendJson(res, terminateNodeProcessForPort({ ...(await readBody(req)), pid: nodePortKillMatch[1] }));
     const portKillMatch = url.pathname.match(/^\/api\/ports\/(\d+)\/kill$/);
     if (portKillMatch && req.method === "POST") return sendJson(res, terminateProcessForPort({ ...(await readBody(req)), pid: portKillMatch[1] }));
     if (req.method === "POST" && url.pathname === "/api/instances") return sendJson(res, addInstance(await readBody(req)));
@@ -1014,7 +1129,8 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, await startInstance(match[1]));
       } catch (error) {
         const message = rememberInstanceError(match[1], error);
-        return sendJson(res, { error: message }, 500);
+        const status = Number(error?.status ?? 500);
+        return sendJson(res, { error: message, portConflict: error?.portConflict ?? null }, status);
       }
     }
     if (match && req.method === "POST" && match[2] === "stop") return sendJson(res, stopInstance(match[1]));
