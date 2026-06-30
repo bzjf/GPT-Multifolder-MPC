@@ -213,6 +213,34 @@ function runSync(command, args, options = {}) {
   return result.stdout;
 }
 
+function selectFolderDialog() {
+  let result;
+  if (process.platform === "win32") {
+    const command = [
+      "Add-Type -AssemblyName System.Windows.Forms;",
+      "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8;",
+      "$dialog = New-Object System.Windows.Forms.FolderBrowserDialog;",
+      "$dialog.Description = '选择代码仓库文件夹';",
+      "$dialog.ShowNewFolderButton = $false;",
+      "if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $dialog.SelectedPath }"
+    ].join(" ");
+    result = spawnSync("powershell", ["-NoProfile", "-STA", "-ExecutionPolicy", "Bypass", "-Command", command], { encoding: "utf8", windowsHide: false });
+  } else if (process.platform === "darwin") {
+    result = spawnSync("osascript", ["-e", "POSIX path of (choose folder with prompt \"选择代码仓库文件夹\")"], { encoding: "utf8" });
+  } else {
+    result = spawnSync("zenity", ["--file-selection", "--directory", "--title=选择代码仓库文件夹"], { encoding: "utf8" });
+  }
+
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    return { path: null, cancelled: true, platform: process.platform };
+  }
+
+  const selectedPath = String(result.stdout ?? "").trim();
+  if (!selectedPath) return { path: null, cancelled: true, platform: process.platform };
+  return { path: path.normalize(selectedPath), cancelled: false, platform: process.platform };
+}
+
 function parseCsvLine(line) {
   const cells = [];
   let current = "";
@@ -820,7 +848,7 @@ main{max-width:1280px}.instance-table{table-layout:fixed;width:100%}.instance-ta
   <section class="card">
     <h2>添加实例</h2>
     <div class="grid">
-      <div><label for="repoPath">仓库路径</label><input id="repoPath" placeholder="D:\\code_repository\\your_project" /></div>
+      <div><label for="repoPath">仓库路径</label><input id="repoPath" placeholder="D:\\projects\\your_project" /></div>
       <div><label for="repoMode">模式</label><select id="repoMode"><option value="read">只读</option><option value="write" selected>可写</option><option value="ship">发布</option></select></div>
       <div><label for="localPort">本地端口</label><input id="localPort" placeholder="自动" /></div>
       <div><button type="button" onclick="addInstance()">添加</button></div>
@@ -1073,6 +1101,48 @@ async function refresh(){
     document.getElementById('rows').replaceChildren();
   }
 }
+function setupRepoPathPicker(){
+  var input = document.getElementById('repoPath');
+  if (!input) return;
+  input.placeholder = '请选择或粘贴本地项目路径';
+  if (document.getElementById('chooseRepoFolderBtn')) return;
+
+  var wrapper = document.createElement('div');
+  wrapper.style.display = 'grid';
+  wrapper.style.gridTemplateColumns = '1fr auto';
+  wrapper.style.gap = '8px';
+  wrapper.style.alignItems = 'center';
+
+  var button = document.createElement('button');
+  button.id = 'chooseRepoFolderBtn';
+  button.type = 'button';
+  button.className = 'secondary';
+  button.textContent = '选择文件夹';
+  button.style.height = '39px';
+  button.addEventListener('click', chooseRepoFolder);
+
+  input.parentNode.insertBefore(wrapper, input);
+  wrapper.appendChild(input);
+  wrapper.appendChild(button);
+}
+
+async function chooseRepoFolder(){
+  try {
+    setStatus('正在打开文件夹选择窗口 ...', false);
+    var data = await api('/api/select-folder', { method: 'POST', body: '{}' });
+    if (data && data.path) {
+      document.getElementById('repoPath').value = data.path;
+      setStatus('已选择仓库路径。', false);
+      return;
+    }
+    setStatus('已取消选择文件夹。', false);
+  } catch (error) {
+    var message = error && error.message ? error.message : String(error);
+    setStatus('选择文件夹失败：' + message, true);
+    window.alert('选择文件夹失败：' + message + '\\n\\n可以手动复制文件夹路径到输入框。');
+  }
+}
+
 async function addInstance(){
   var body = {
     repoPath: document.getElementById('repoPath').value,
@@ -1141,6 +1211,7 @@ document.getElementById('portRows').addEventListener('click', function(event){
 window.addEventListener('error', function(event){
   setStatus('界面错误：' + event.message, true);
 });
+setupRepoPathPicker();
 refresh();
 refreshPorts();
 setInterval(refresh, 3000);
@@ -1160,6 +1231,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && url.pathname === "/api/state") return sendJson(res, listView());
     if (req.method === "GET" && url.pathname === "/api/ports") return sendJson(res, portsView(url.searchParams.get("ports")));
     if (req.method === "GET" && url.pathname === "/api/node-ports") return sendJson(res, nodePortsView());
+    if (req.method === "POST" && url.pathname === "/api/select-folder") return sendJson(res, selectFolderDialog());
     const nodePortKillMatch = url.pathname.match(/^\/api\/node-ports\/(\d+)\/kill$/);
     if (nodePortKillMatch && req.method === "POST") return sendJson(res, terminateNodeProcessForPort({ ...(await readBody(req)), pid: nodePortKillMatch[1] }));
     const portKillMatch = url.pathname.match(/^\/api\/ports\/(\d+)\/kill$/);

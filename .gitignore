@@ -28,10 +28,12 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
-.runtime/
 
 # Runtime state
 .runtime/
+**/.runtime/
+**/config.runtime.json
+**/public-path-code-*.txt
 
 # Local generated troubleshooting exports
 Control Panel *.pdf
@@ -42,6 +44,12 @@ Control Panel *.pdf
 !.env.example
 config.local.json
 *.local.json
+gpt-repo-mcp/config.local.json
+*.token
+*.secret
+*.key
+*.pem
+*.p12
 
 # Test artifacts
 playwright-report/
