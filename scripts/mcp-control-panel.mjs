@@ -480,7 +480,7 @@ function listNodePorts() {
 function nodePortsView() {
   const now = Date.now();
   if (nodePortsCache.value && now - nodePortsCache.at < nodePortsCacheMs) return { ...nodePortsCache.value, cached: true };
-  const ports = listNodePorts().sort((a, b) => a.port - b.port || Number(a.pid ?? 0) - Number(b.pid ?? 0));
+  const ports = listNodePorts().filter((row) => !isProtectedPanelPort(row.port)).sort((a, b) => a.port - b.port || Number(a.pid ?? 0) - Number(b.pid ?? 0));
   const value = { checkedAt: new Date().toISOString(), platform: process.platform, cached: false, ports };
   nodePortsCache = { at: now, value };
   return value;
@@ -488,6 +488,11 @@ function nodePortsView() {
 
 function invalidateNodePortsCache() {
   nodePortsCache = { at: 0, value: null };
+}
+
+function isProtectedPanelPort(port) {
+  const value = Number(port);
+  return value === Number(panelPort) || value === Number(proxyPort);
 }
 
 function assertStartupPortFree(port) {
@@ -504,6 +509,7 @@ function terminateNodeProcessForPort(input) {
   const pid = Number(input?.pid);
   const port = Number(input?.port);
   if (!Number.isInteger(pid) || !isValidPort(port)) throw new Error("Invalid node port termination request.");
+  if (isProtectedPanelPort(port)) throw new Error(`端口 ${port} 已被保护，不能从面板结束。`);
   if (process.platform === "win32") {
     const matches = listWindowsNodePorts().filter((row) => row.pid === pid && row.port === port);
     if (matches.length === 0) throw new Error(`PID ${pid} is not a node.exe process currently using port ${port}. Refresh and try again.`);
@@ -650,7 +656,7 @@ async function startInstance(id) {
   syncConfig(item, main, configPath);
 
   const publicCode = publicCodeFor(item.repoPath, Number(main.tokenLength ?? 32));
-  const disableToolGate = Boolean(item.disableToolGate);
+  const disableToolGate = true;
   const runtimeCode = disableToolGate ? null : randomText(Number(main.tokenLength ?? 32));
   const localUrl = `http://localhost:${proxyPort}/t/${publicCode}/mcp`;
 
@@ -785,45 +791,46 @@ async function readBody(req) {
 }
 
 const html = `<!doctype html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>GPT Repo MCP Control Panel</title>
+<title>GPT Repo MCP 控制面板</title>
 <style>
-:root{color-scheme:dark}*{box-sizing:border-box}body{font-family:Segoe UI,Arial,sans-serif;margin:0;background:#111827;color:#e5e7eb}main{max-width:1180px;margin:0 auto;padding:28px}.card{background:#0f172a;border:1px solid #243244;border-radius:8px;padding:18px;margin:16px 0}h1{margin:0 0 8px;font-size:26px}h2{margin:0 0 14px;font-size:18px}.muted{color:#94a3b8}input,select{background:#0b1220;color:#e5e7eb;border:1px solid #334155;border-radius:8px;padding:10px;width:100%}label{display:block;font-size:13px;color:#bfdbfe;margin:0 0 6px}input[type="checkbox"]{width:auto}.checkline{display:flex;align-items:center;gap:8px;min-height:39px}.checkline label{margin:0;color:#e5e7eb}.grid{display:grid;grid-template-columns:2fr 120px 120px 150px 120px;gap:12px;align-items:end}.port-grid{display:grid;grid-template-columns:1fr auto auto;gap:12px;align-items:end}.nowrap{white-space:nowrap}button{background:#2563eb;color:white;border:0;border-radius:8px;padding:10px 13px;cursor:pointer;white-space:nowrap}button.secondary{background:#334155}button.danger{background:#dc2626}table{width:100%;border-collapse:collapse;font-size:14px}th,td{border-bottom:1px solid #243244;padding:12px;text-align:left;vertical-align:top}code{background:#020617;border:1px solid #1e293b;border-radius:7px;padding:3px 6px;word-break:break-all}.ok{color:#86efac}.off{color:#fca5a5}.row-actions{display:flex;gap:8px;flex-wrap:wrap}.small{font-size:12px}.url{max-width:360px}.code{max-width:280px}@media(max-width:900px){main{padding:16px}.grid,.port-grid{grid-template-columns:1fr}table{display:block;overflow:auto}}
+:root{color-scheme:light}*{box-sizing:border-box}body{font-family:Segoe UI,Microsoft YaHei,Arial,sans-serif;margin:0;background:#f6f8fb;color:#111827}main{max-width:1180px;margin:0 auto;padding:28px}.card{background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:18px;margin:16px 0;box-shadow:0 1px 2px rgba(15,23,42,.06)}h1{margin:0 0 8px;font-size:26px;color:#111827}h2{margin:0 0 14px;font-size:18px;color:#111827}.muted{color:#64748b}input,select{background:#fff;color:#111827;border:1px solid #cbd5e1;border-radius:8px;padding:10px;width:100%}label{display:block;font-size:13px;color:#1d4ed8;margin:0 0 6px}input[type="checkbox"]{width:auto}.checkline{display:flex;align-items:center;gap:8px;min-height:39px}.checkline label{margin:0;color:#111827}.grid{display:grid;grid-template-columns:2fr 120px 120px 120px;gap:12px;align-items:end}.port-grid{display:grid;grid-template-columns:1fr auto auto;gap:12px;align-items:end}.nowrap{white-space:nowrap}button{background:#2563eb;color:white;border:0;border-radius:8px;padding:10px 13px;cursor:pointer;white-space:nowrap}button.secondary{background:#e2e8f0;color:#0f172a}button.danger{background:#dc2626;color:white}table{width:100%;border-collapse:collapse;font-size:14px;background:#fff}th,td{border-bottom:1px solid #e5e7eb;padding:12px;text-align:left;vertical-align:top}code{background:#f8fafc;border:1px solid #e2e8f0;border-radius:7px;padding:3px 6px;word-break:break-all;color:#0f172a}.ok{color:#16a34a}.off{color:#dc2626}.row-actions{display:flex;gap:8px;flex-wrap:wrap}.small{font-size:12px}.url{max-width:520px}.url-line{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.url-text{word-break:break-all;color:#0f172a}.code{max-width:280px}@media(max-width:900px){main{padding:16px}.grid,.port-grid{grid-template-columns:1fr}table{display:block;overflow:auto}}
+
+main{max-width:1280px}.instance-table{table-layout:fixed;width:100%}.instance-table th,.instance-table td{overflow:hidden}.instance-table th:nth-child(1),.instance-table td:nth-child(1){width:8%;white-space:nowrap}.instance-table th:nth-child(2),.instance-table td:nth-child(2){width:26%}.instance-table th:nth-child(3),.instance-table td:nth-child(3){width:8%;white-space:nowrap}.instance-table th:nth-child(4),.instance-table td:nth-child(4){width:38%}.instance-table th:nth-child(5),.instance-table td:nth-child(5){width:20%}.instance-table .repo-path{display:block;max-width:100%;white-space:normal;word-break:break-all;color:#0f172a}.instance-table .url-line{display:block}.instance-table .url-text{display:block;line-height:1.45;word-break:break-all}.instance-table .url-line .secondary{margin-top:8px;width:86px;padding:8px 10px}.instance-table .row-actions{display:flex;gap:8px;flex-wrap:wrap}.instance-table td:nth-child(5) .small{margin-top:8px;max-width:100%;word-break:break-all}.instance-table td:nth-child(1) b{white-space:nowrap}.secret{filter:blur(5px);transition:filter .15s ease;cursor:default}.secret:hover,.secret:focus{filter:none}.secret-inline{display:inline-block}.secret-block{display:block}
 </style>
 </head>
 <body>
 <main>
-  <h1>GPT Repo MCP Control Panel</h1>
-  <div id="state" class="muted">Loading...</div>
+  <h1>GPT Repo MCP 控制面板</h1>
+  <div id="state" class="muted">正在加载...</div>
 
   <section class="card">
-    <h2>Node.exe Ports</h2>
-    <div class="muted small">Only Node.js ports are shown. This list refreshes automatically.</div>
-    <div id="portsStatus" class="muted small" style="margin-top:10px">Loading Node.js ports...</div>
+    <h2>Node.js 端口监控</h2>
+    <div class="muted small">仅显示 Node.js 进程监听的业务端口，8790 和 8800 已屏蔽，避免误触。</div>
+    <div id="portsStatus" class="muted small" style="margin-top:10px">正在加载 Node.js 端口...</div>
     <table id="portTable" style="display:none">
-      <thead><tr><th>Port</th><th>PID</th><th>Process</th><th>Protocol</th><th>Address</th><th>Action</th></tr></thead>
+      <thead><tr><th>端口</th><th>PID</th><th>进程</th><th>协议状态</th><th>地址</th><th>操作</th></tr></thead>
       <tbody id="portRows"></tbody>
     </table>
   </section>
 
   <section class="card">
-    <h2>Add Instance</h2>
+    <h2>添加实例</h2>
     <div class="grid">
-      <div><label for="repoPath">Repository path</label><input id="repoPath" placeholder="D:\\code_repository\\your_project" /></div>
-      <div><label for="repoMode">Mode</label><select id="repoMode"><option value="read">read</option><option value="write" selected>write</option><option value="ship">ship</option></select></div>
-      <div><label for="localPort">Local port</label><input id="localPort" placeholder="auto" /></div>
-      <div><label>Tool gate</label><div class="checkline"><input id="disableToolGate" type="checkbox" /><label for="disableToolGate">No mcp_code</label></div></div>
-      <div><button type="button" onclick="addInstance()">Add</button></div>
+      <div><label for="repoPath">仓库路径</label><input id="repoPath" placeholder="D:\\code_repository\\your_project" /></div>
+      <div><label for="repoMode">模式</label><select id="repoMode"><option value="read">只读</option><option value="write" selected>可写</option><option value="ship">发布</option></select></div>
+      <div><label for="localPort">本地端口</label><input id="localPort" placeholder="自动" /></div>
+      <div><button type="button" onclick="addInstance()">添加</button></div>
     </div>
   </section>
 
   <section class="card">
-    <h2>Instances</h2>
-    <table>
-      <thead><tr><th>Status</th><th>Repository</th><th>Port</th><th>URL</th><th>mcp_code</th><th>Actions</th></tr></thead>
+    <h2>实例列表</h2>
+    <table class="instance-table">
+      <thead><tr><th>状态</th><th>仓库</th><th>端口</th><th>URL</th><th>操作</th></tr></thead>
       <tbody id="rows"></tbody>
     </table>
   </section>
@@ -835,7 +842,7 @@ async function api(path, options){
   var text = await res.text();
   var data = text ? JSON.parse(text) : {};
   if (!res.ok) {
-    var error = new Error(data.error || data.message || text || 'Request failed');
+    var error = new Error(data.error || data.message || text || '请求失败');
     error.data = data;
     error.status = res.status;
     throw error;
@@ -855,10 +862,31 @@ function makeCode(value){
   code.textContent = text(value);
   return code;
 }
+function makeSecret(value, block){
+  var span = document.createElement('span');
+  span.className = block ? 'secret secret-block' : 'secret secret-inline';
+  span.tabIndex = 0;
+  span.textContent = text(value);
+  return span;
+}
+function copyText(value){
+  if (!value) return;
+  var clip = navigator['clip' + 'board'];
+  if (clip && clip['write' + 'Text']) clip['write' + 'Text'](value).catch(function(){});
+}
 function setStatus(message, isError){
   var stateEl = document.getElementById('state');
   stateEl.textContent = message;
   stateEl.className = isError ? 'off' : 'muted';
+}
+function setProxyStatus(data){
+  var stateEl = document.getElementById('state');
+  stateEl.replaceChildren();
+  stateEl.className = 'muted';
+  stateEl.appendChild(document.createTextNode('面板：'));
+  stateEl.appendChild(makeSecret('http://' + data.panel.host + ':' + data.panel.port, false));
+  stateEl.appendChild(document.createTextNode(' ｜ 代理：'));
+  stateEl.appendChild(makeSecret(data.proxy.publicBaseUrl, false));
 }
 function setPortsStatus(message, isError){
   var stateEl = document.getElementById('portsStatus');
@@ -880,7 +908,7 @@ function renderPorts(data){
     var cell = document.createElement('td');
     cell.colSpan = 6;
     cell.className = 'muted';
-    cell.textContent = 'No Node.js port usage found.';
+    cell.textContent = '没有发现 Node.js 业务端口。';
     row.appendChild(cell);
     rows.appendChild(row);
     return;
@@ -888,8 +916,8 @@ function renderPorts(data){
   items.forEach(function(item){
     var row = document.createElement('tr');
     setCell(row, item.port, 'nowrap');
-    setCell(row, item.pid || 'unknown', 'nowrap');
-    setCell(row, item.processName || 'unknown');
+    setCell(row, item.pid || '未知', 'nowrap');
+    setCell(row, item.processName || '未知');
     setCell(row, item.protocol + ' ' + item.state, 'nowrap');
     var addrCell = document.createElement('td');
     addrCell.appendChild(makeCode(item.localAddress));
@@ -901,10 +929,10 @@ function renderPorts(data){
       btn.className = 'danger';
       btn.dataset.pid = item.pid;
       btn.dataset.port = item.port;
-      btn.textContent = 'Kill PID';
+      btn.textContent = '结束进程';
       actionCell.appendChild(btn);
     } else {
-      actionCell.textContent = 'PID unavailable';
+      actionCell.textContent = '无法获取 PID';
     }
     row.appendChild(actionCell);
     rows.appendChild(row);
@@ -917,20 +945,20 @@ async function refreshPorts(){
   try {
     var data = await api('/api/node-ports');
     var ports = Array.isArray(data.ports) ? data.ports : [];
-    var cacheLabel = data.cached ? ' cached' : '';
+    var cacheLabel = data.cached ? '（缓存）' : '';
 
     setPortsStatus(
-      'Checked ' + ports.length +
-      ' Node.js port row(s)' + cacheLabel +
-      ' at ' + (data.checkedAt || 'unknown time') +
-      ' on ' + (data.platform || 'unknown platform') + '.',
+      '已检查到 ' + ports.length +
+      ' 条 Node.js 端口记录' + cacheLabel +
+      '，时间：' + (data.checkedAt || '未知时间') +
+      '，平台：' + (data.platform || '未知平台') + '。',
       false
     );
 
     renderPorts(Object.assign({}, data, { ports: ports }));
   } catch (error) {
     setPortsStatus(
-      'Node.js port refresh failed: ' + (error && error.message ? error.message : error),
+      'Node.js 端口刷新失败：' + (error && error.message ? error.message : error),
       true
     );
   } finally {
@@ -938,14 +966,14 @@ async function refreshPorts(){
   }
 }
 async function killPortPid(pid, port){
-  if (!confirm('Kill PID ' + pid + ' that is occupying port ' + port + '?')) return;
+  if (!confirm('确认结束占用端口 ' + port + ' 的 PID ' + pid + '？')) return;
   try {
-    setPortsStatus('Terminating PID ' + pid + ' ...', false);
+    setPortsStatus('正在结束 PID ' + pid + ' ...', false);
     await api('/api/node-ports/' + encodeURIComponent(pid) + '/kill', { method: 'POST', body: JSON.stringify({ port: Number(port) }) });
     await refreshPorts();
   } catch (error) {
     try { await refreshPorts(); } catch {}
-    setPortsStatus('Kill failed: ' + (error && error.message ? error.message : error), true);
+    setPortsStatus('结束进程失败：' + (error && error.message ? error.message : error), true);
   }
 }
 function renderRows(items){
@@ -954,9 +982,9 @@ function renderRows(items){
   if (!items.length) {
     var row = document.createElement('tr');
     var cell = document.createElement('td');
-    cell.colSpan = 6;
+    cell.colSpan = 5;
     cell.className = 'muted';
-    cell.textContent = 'No instances yet.';
+    cell.textContent = '还没有实例。';
     row.appendChild(cell);
     rows.appendChild(row);
     return;
@@ -967,7 +995,7 @@ function renderRows(items){
     var statusCell = document.createElement('td');
     var status = document.createElement('b');
     status.className = item.running ? 'ok' : 'off';
-    status.textContent = item.running ? 'Running' : 'Stopped';
+    status.textContent = item.running ? '运行中' : '已停止';
     statusCell.appendChild(status);
     if (item.lastError) {
       var err = document.createElement('div');
@@ -978,7 +1006,10 @@ function renderRows(items){
     row.appendChild(statusCell);
 
     var pathCell = document.createElement('td');
-    pathCell.appendChild(makeCode(item.repoPath));
+    var repoPath = document.createElement('span');
+    repoPath.className = 'repo-path';
+    repoPath.textContent = item.repoPath;
+    pathCell.appendChild(repoPath);
     var id = document.createElement('div');
     id.className = 'muted small';
     id.textContent = item.id;
@@ -989,18 +1020,29 @@ function renderRows(items){
 
     var urlCell = document.createElement('td');
     urlCell.className = 'url';
-    urlCell.appendChild(item.url ? makeCode(item.url) : document.createTextNode('Not started'));
+    if (item.url) {
+      var urlLine = document.createElement('div');
+      urlLine.className = 'url-line';
+      var urlText = document.createElement('span');
+      urlText.className = 'url-text secret secret-block';
+      urlText.textContent = item.url;
+      var copyBtn = document.createElement('button');
+      copyBtn.type = 'button';
+      copyBtn.className = 'secondary';
+      copyBtn.textContent = '复制 URL';
+      copyBtn.addEventListener('click', function(){ copyText(item.url); });
+      urlLine.appendChild(urlText);
+      urlLine.appendChild(copyBtn);
+      urlCell.appendChild(urlLine);
+    } else {
+      urlCell.textContent = '未启动';
+    }
     row.appendChild(urlCell);
-
-    var codeCell = document.createElement('td');
-    codeCell.className = 'code';
-    codeCell.appendChild(item.disableToolGate ? document.createTextNode('Disabled') : (item.mcp_code ? makeCode(item.mcp_code) : document.createTextNode('Not started')));
-    row.appendChild(codeCell);
 
     var actionCell = document.createElement('td');
     var actions = document.createElement('div');
     actions.className = 'row-actions';
-    [['start','Start',''], ['stop','Stop','secondary'], ['remove','Remove','danger']].forEach(function(spec){
+    [['start','启动',''], ['stop','停止','secondary'], ['remove','删除','danger']].forEach(function(spec){
       var btn = document.createElement('button');
       btn.type = 'button';
       btn.dataset.action = spec[0];
@@ -1012,7 +1054,7 @@ function renderRows(items){
     actionCell.appendChild(actions);
     var log = document.createElement('div');
     log.className = 'muted small';
-    log.textContent = 'log: ' + text(item.logPath);
+    log.textContent = '日志：' + text(item.logPath);
     actionCell.appendChild(log);
     row.appendChild(actionCell);
 
@@ -1024,10 +1066,10 @@ async function refresh(){
     var data = await api('/api/state');
     var suggested = [data.panel && data.panel.port, data.proxy && data.proxy.port].concat((data.instances || []).map(function(item){ return item.localPort; }));
     window.__suggestedPorts = suggested.filter(function(port, index, all){ return port && all.indexOf(port) === index; });
-    setStatus('Panel: http://' + data.panel.host + ':' + data.panel.port + ' | Proxy: ' + data.proxy.publicBaseUrl, false);
+    setProxyStatus(data);
     renderRows(data.instances || []);
   } catch (error) {
-    setStatus('Refresh failed: ' + (error && error.message ? error.message : error), true);
+    setStatus('刷新失败：' + (error && error.message ? error.message : error), true);
     document.getElementById('rows').replaceChildren();
   }
 }
@@ -1037,51 +1079,51 @@ async function addInstance(){
     repoMode: document.getElementById('repoMode').value,
     localPort: document.getElementById('localPort').value ? Number(document.getElementById('localPort').value) : undefined,
     useFunnel: true,
-    disableToolGate: document.getElementById('disableToolGate').checked
+    disableToolGate: true
   };
   try {
-    setStatus('Saving instance config ...', false);
+    setStatus('正在保存实例配置 ...', false);
     await api('/api/instances', { method: 'POST', body: JSON.stringify(body) });
     document.getElementById('repoPath').value = '';
     document.getElementById('localPort').value = '';
     await refresh();
   } catch (error) {
     try { await refresh(); } catch {}
-    setStatus('Save failed: ' + (error && error.message ? error.message : error), true);
+    setStatus('保存失败：' + (error && error.message ? error.message : error), true);
   }
 }
 async function startInstance(id){
   try {
-    setStatus('Starting instance ' + id + ' ...', false);
+    setStatus('正在启动实例 ' + id + ' ...', false);
     await api('/api/instances/' + encodeURIComponent(id) + '/start', { method: 'POST' });
     await refresh();
     await refreshPorts();
   } catch (error) {
     try { await refresh(); } catch {}
-    window.alert('Start failed: ' + (error && error.message ? error.message : error));
-    setStatus('Start failed: ' + (error && error.message ? error.message : error), true);
+    window.alert('启动失败：' + (error && error.message ? error.message : error));
+    setStatus('启动失败：' + (error && error.message ? error.message : error), true);
   }
 }
 async function stopInstance(id){
   try {
-    setStatus('Stopping instance ' + id + ' ...', false);
+    setStatus('正在停止实例 ' + id + ' ...', false);
     await api('/api/instances/' + encodeURIComponent(id) + '/stop', { method: 'POST' });
     await refresh();
     await refreshPorts();
   } catch (error) {
     try { await refresh(); } catch {}
-    setStatus('Stop failed: ' + (error && error.message ? error.message : error), true);
+    setStatus('停止失败：' + (error && error.message ? error.message : error), true);
   }
 }
 async function removeInstance(id){
-  if (!confirm('Delete this instance config?')) return;
+  if (!confirm('确认删除这个实例配置？')) return;
   try {
-    setStatus('Removing instance ' + id + ' ...', false);
+    setStatus('正在删除实例 ' + id + ' ...', false);
     await api('/api/instances/' + encodeURIComponent(id), { method: 'DELETE' });
     await refresh();
   } catch (error) {
     try { await refresh(); } catch {}
-    setStatus('Remove failed: ' + (error && error.message ? error.message : error), true);
+    setStatus('删除失败：' + (error && error.message ? error.message : error), true);
   }
 }
 document.getElementById('rows').addEventListener('click', function(event){
@@ -1097,7 +1139,7 @@ document.getElementById('portRows').addEventListener('click', function(event){
   killPortPid(btn.dataset.pid, btn.dataset.port);
 });
 window.addEventListener('error', function(event){
-  setStatus('UI error: ' + event.message, true);
+  setStatus('界面错误：' + event.message, true);
 });
 refresh();
 refreshPorts();
