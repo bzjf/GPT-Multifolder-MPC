@@ -5,6 +5,7 @@ import { CodexReviewInputSchema, CodexReviewResultSchema, CodexTaskInputSchema, 
 import { CodexReadSkillInputSchema, CodexReadSkillResultSchema, CodexSkillsInputSchema, CodexSkillsResultSchema } from "../contracts/codex-skills.contract.js";
 import { DecisionLogInputSchema, DecisionLogResultSchema } from "../contracts/decision.contract.js";
 import { FetchFileInputSchema, FileContentSchema, ReadManyInputSchema, ReadManyResultSchema } from "../contracts/file.contract.js";
+import { FetchImageInputSchema, ImageContentSchema } from "../contracts/image.contract.js";
 import { GitCommitInputSchema, GitCommitResultSchema, GitRecoverInputSchema, GitRecoverResultSchema, GitRestorePathsInputSchema, GitRestorePathsResultSchema, GitStageCommitInputSchema, GitStageCommitResultSchema, GitStageInputSchema, GitStageResultSchema, GitUnstageInputSchema, GitUnstageResultSchema } from "../contracts/git-operations.contract.js";
 import { GitDiffInputSchema, GitDiffResultSchema, GitStatusInputSchema, GitStatusResultSchema } from "../contracts/git.contract.js";
 import { GitReviewInputSchema, GitReviewResultSchema } from "../contracts/git-review.contract.js";
@@ -29,6 +30,7 @@ export type ToolName =
   | "repo_tree"
   | "repo_search"
   | "repo_fetch_file"
+  | "repo_fetch_image"
   | "repo_read_many"
   | "repo_git_status"
   | "repo_git_diff"
@@ -93,6 +95,10 @@ export const toolContracts = {
   repo_fetch_file: {
     input: FetchFileInputSchema,
     output: FileContentSchema
+  },
+  repo_fetch_image: {
+    input: FetchImageInputSchema,
+    output: ImageContentSchema
   },
   repo_read_many: {
     input: ReadManyInputSchema,

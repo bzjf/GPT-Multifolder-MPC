@@ -54,6 +54,7 @@ describe("tool catalog contracts", () => {
       "repo_tree",
       "repo_search",
       "repo_fetch_file",
+      "repo_fetch_image",
       "repo_read_many",
       "repo_git_status",
       "repo_git_diff",
@@ -869,6 +870,30 @@ describe("tool catalog contracts", () => {
             "warnings",
           ],
           "title": "Fetch one file",
+        },
+        {
+          "annotations": {
+            "destructiveHint": false,
+            "idempotentHint": true,
+            "openWorldHint": false,
+            "readOnlyHint": true,
+          },
+          "description": "Use this when the user asks to inspect a specific PNG, JPEG, or WebP image inside an approved repository. Returns image content to the client plus safe metadata; does not read arbitrary binary files.",
+          "inputKeys": [
+            "max_bytes",
+            "override_default_excludes",
+            "path",
+            "repo_id",
+          ],
+          "name": "repo_fetch_image",
+          "outputKeys": [
+            "mime_type",
+            "path",
+            "sha256",
+            "size_bytes",
+            "warnings",
+          ],
+          "title": "Fetch one image",
         },
         {
           "annotations": {

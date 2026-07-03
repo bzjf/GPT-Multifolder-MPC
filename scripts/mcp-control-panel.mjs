@@ -105,11 +105,22 @@ function pickPort(state) {
 
 function instanceView(item) {
   const live = runtime.get(item.id);
+  const mcpRunning = Boolean(live?.child && !live.child.killed && !live.exited);
+  const funnelEnabled = true;
+  const funnelRunning = proxyFunnelStarted;
+  const available = mcpRunning && funnelRunning;
+  const publicUrl = available && live?.publicCode
+    ? `${proxyPublicBaseUrl}/t/${live.publicCode}/mcp`
+    : null;
   return {
     ...item,
-    running: Boolean(live?.child && !live.child.killed && !live.exited),
-    url: live?.url ?? null,
-    localUrl: live?.localUrl ?? null,
+    running: mcpRunning,
+    mcpRunning,
+    funnelEnabled,
+    funnelRunning,
+    available,
+    url: publicUrl,
+    localUrl: mcpRunning ? live?.localUrl ?? null : null,
     mcp_code: live?.runtimeCode ?? null,
     logPath: live?.logPath ?? path.join(instanceDir(item.id), "server.log"),
     lastError: live?.lastError ?? null
@@ -605,19 +616,31 @@ function httpsBaseUrl(dnsName, httpsPort) {
   return Number(httpsPort) === 443 ? `https://${dnsName}` : `https://${dnsName}:${httpsPort}`;
 }
 
-function ensureProxyFunnel(httpsPort) {
-  if (proxyFunnelStarted) return;
+function currentProxyHttpsPort() {
+  const main = loadMainConfig();
+  return Number(main.proxyHttpsPort ?? main.httpsPort ?? 443);
+}
+
+function startProxyFunnel(httpsPort = currentProxyHttpsPort()) {
+  if (proxyFunnelStarted) {
+    return { started: true, httpsPort, publicBaseUrl: proxyPublicBaseUrl };
+  }
   runSync("tailscale", ["funnel", "--bg", `--https=${httpsPort}`, `localhost:${proxyPort}`]);
   proxyFunnelStarted = true;
   const dns = detectTailscaleName();
   proxyPublicBaseUrl = dns ? httpsBaseUrl(dns, httpsPort) : `https://YOUR_DEVICE.YOUR_TAILNET.ts.net${Number(httpsPort) === 443 ? "" : `:${httpsPort}`}`;
+  return { started: true, httpsPort, publicBaseUrl: proxyPublicBaseUrl };
 }
 
-function stopProxyFunnel(httpsPort = 443) {
-  if (!proxyFunnelStarted) return;
-  try { runSync("tailscale", ["funnel", `--https=${httpsPort}`, "off"]); } catch {}
+function stopProxyFunnel(httpsPort = currentProxyHttpsPort(), ignoreErrors = false) {
+  try {
+    runSync("tailscale", ["funnel", `--https=${httpsPort}`, "off"]);
+  } catch (error) {
+    if (!ignoreErrors) throw error;
+  }
   proxyFunnelStarted = false;
   proxyPublicBaseUrl = localProxyBaseUrl();
+  return { started: false, httpsPort, publicBaseUrl: proxyPublicBaseUrl };
 }
 
 function instanceForPublicCode(publicCode) {
@@ -688,18 +711,6 @@ async function startInstance(id) {
   const runtimeCode = disableToolGate ? null : randomText(Number(main.tokenLength ?? 32));
   const localUrl = `http://localhost:${proxyPort}/t/${publicCode}/mcp`;
 
-  let proxyWarning = null;
-  if (item.useFunnel) {
-    const httpsPort = Number(main.proxyHttpsPort ?? item.httpsPort ?? main.httpsPort ?? 443);
-    try {
-      ensureProxyFunnel(httpsPort);
-    } catch (error) {
-      proxyWarning = error instanceof Error ? error.message : String(error);
-    }
-  }
-
-  const url = `${proxyPublicBaseUrl}/t/${publicCode}/mcp`;
-
   const logStream = createWriteStream(logPath, { flags: "a" });
   const env = { ...process.env };
   env.GPT_REPO_CONFIG = configPath;
@@ -736,28 +747,51 @@ async function startInstance(id) {
   child.stdout?.pipe(logStream, { end: false });
   child.stderr?.pipe(logStream, { end: false });
 
-  const live = { child, url, localUrl, runtimeCode, logPath, lastError: proxyWarning, logStream, disableToolGate, exited: false };
+  const live = { child, publicCode, localUrl, runtimeCode, logPath, lastError: null, logStream, disableToolGate, exited: false };
   runtime.set(id, live);
   child.on("exit", (code, signal) => {
     live.exited = true;
-    live.lastError = code === 0 || signal ? null : `Exited with code ${code}`;
-    logStream.end(`[control-panel] exited code=${code} signal=${signal ?? ""}\n`);
+    live.lastError = live.stopRequested || code === 0 || signal ? null : `Exited with code ${code}`;
+    if (!logStream.destroyed && !logStream.writableEnded) {
+      logStream.end(`[control-panel] ${live.stopRequested ? "stopped" : "exited"} code=${code} signal=${signal ?? ""}\n`);
+    }
   });
   child.on("error", (error) => {
     live.exited = true;
     live.lastError = `${error.message} (command: ${command} ${args.join(" ")}; cwd: ${projectDir}; log: ${logPath})`;
-    logStream.end(`[control-panel] child error: ${error instanceof Error ? error.stack : String(error)}\n`);
+    if (!logStream.destroyed && !logStream.writableEnded) {
+      logStream.end(`[control-panel] child error: ${error instanceof Error ? error.stack : String(error)}\n`);
+    }
   });
 
   return instanceView(item);
+}
+
+function terminateManagedChild(child, id) {
+  const pid = Number(child?.pid);
+  if (!Number.isInteger(pid) || pid <= 0) {
+    throw new Error(`Cannot stop instance ${id}: invalid child PID.`);
+  }
+
+  if (process.platform === "win32") {
+    // The managed process is cmd.exe -> npm -> tsx -> node. Killing only
+    // cmd.exe leaves the descendant node.exe listening on the MCP port.
+    runSync("taskkill", ["/PID", String(pid), "/T", "/F"]);
+    return;
+  }
+
+  child.kill("SIGTERM");
 }
 
 function stopInstance(id) {
   const state = loadState();
   const item = state.instances.find((candidate) => candidate.id === id);
   const live = runtime.get(id);
-  if (live?.child && !live.child.killed) live.child.kill();
-  if (live?.logStream && !live.logStream.destroyed) live.logStream.end();
+  if (live) live.stopRequested = true;
+  if (live?.child && live.child.exitCode === null) terminateManagedChild(live.child, id);
+  if (live?.logStream && !live.logStream.destroyed && !live.logStream.writableEnded && (!live.child || live.child.exitCode !== null)) {
+    live.logStream.end("[control-panel] stopped without a live child process\n");
+  }
   invalidateNodePortsCache();
   runtime.delete(id);
   return item ? instanceView(item) : { id, running: false };
@@ -825,15 +859,29 @@ const html = `<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>GPT Repo MCP 控制面板</title>
 <style>
-:root{color-scheme:light}*{box-sizing:border-box}body{font-family:Segoe UI,Microsoft YaHei,Arial,sans-serif;margin:0;background:#f6f8fb;color:#111827}main{max-width:1180px;margin:0 auto;padding:28px}.card{background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:18px;margin:16px 0;box-shadow:0 1px 2px rgba(15,23,42,.06)}h1{margin:0 0 8px;font-size:26px;color:#111827}h2{margin:0 0 14px;font-size:18px;color:#111827}.muted{color:#64748b}input,select{background:#fff;color:#111827;border:1px solid #cbd5e1;border-radius:8px;padding:10px;width:100%}label{display:block;font-size:13px;color:#1d4ed8;margin:0 0 6px}input[type="checkbox"]{width:auto}.checkline{display:flex;align-items:center;gap:8px;min-height:39px}.checkline label{margin:0;color:#111827}.grid{display:grid;grid-template-columns:2fr 120px 120px 120px;gap:12px;align-items:end}.port-grid{display:grid;grid-template-columns:1fr auto auto;gap:12px;align-items:end}.nowrap{white-space:nowrap}button{background:#2563eb;color:white;border:0;border-radius:8px;padding:10px 13px;cursor:pointer;white-space:nowrap}button.secondary{background:#e2e8f0;color:#0f172a}button.danger{background:#dc2626;color:white}table{width:100%;border-collapse:collapse;font-size:14px;background:#fff}th,td{border-bottom:1px solid #e5e7eb;padding:12px;text-align:left;vertical-align:top}code{background:#f8fafc;border:1px solid #e2e8f0;border-radius:7px;padding:3px 6px;word-break:break-all;color:#0f172a}.ok{color:#16a34a}.off{color:#dc2626}.row-actions{display:flex;gap:8px;flex-wrap:wrap}.small{font-size:12px}.url{max-width:520px}.url-line{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.url-text{word-break:break-all;color:#0f172a}.code{max-width:280px}@media(max-width:900px){main{padding:16px}.grid,.port-grid{grid-template-columns:1fr}table{display:block;overflow:auto}}
+:root{color-scheme:light}*{box-sizing:border-box}body{font-family:Segoe UI,Microsoft YaHei,Arial,sans-serif;margin:0;background:#f6f8fb;color:#111827}main{max-width:1180px;margin:0 auto;padding:28px}.card{background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:18px;margin:16px 0;box-shadow:0 1px 2px rgba(15,23,42,.06)}h1{margin:0 0 8px;font-size:26px;color:#111827}h2{margin:0 0 14px;font-size:18px;color:#111827}.muted{color:#64748b}input,select{background:#fff;color:#111827;border:1px solid #cbd5e1;border-radius:8px;padding:10px;width:100%}label{display:block;font-size:13px;color:#1d4ed8;margin:0 0 6px}input[type="checkbox"]{width:auto}.checkline{display:flex;align-items:center;gap:8px;min-height:39px}.checkline label{margin:0;color:#111827}.grid{display:grid;grid-template-columns:2fr 120px 120px 120px;gap:12px;align-items:end}.port-grid{display:grid;grid-template-columns:1fr auto auto;gap:12px;align-items:end}.nowrap{white-space:nowrap}button{background:#2563eb;color:white;border:0;border-radius:8px;padding:10px 13px;cursor:pointer;white-space:nowrap}button.secondary{background:#e2e8f0;color:#0f172a}button.danger{background:#dc2626;color:white}button:disabled{cursor:not-allowed;opacity:.5}table{width:100%;border-collapse:collapse;font-size:14px;background:#fff}th,td{border-bottom:1px solid #e5e7eb;padding:12px;text-align:left;vertical-align:top}code{background:#f8fafc;border:1px solid #e2e8f0;border-radius:7px;padding:3px 6px;word-break:break-all;color:#0f172a}.ok{color:#16a34a}.warn{color:#d97706}.off{color:#dc2626}.row-actions{display:flex;gap:8px;flex-wrap:wrap}.funnel-control{display:flex;align-items:center;justify-content:space-between;gap:18px}.status-line{margin-top:5px;white-space:normal}.small{font-size:12px}.url{max-width:520px}.url-line{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.url-text{word-break:break-all;color:#0f172a}.code{max-width:280px}@media(max-width:900px){main{padding:16px}.grid,.port-grid{grid-template-columns:1fr}table{display:block;overflow:auto}}
 
-main{max-width:1280px}.instance-table{table-layout:fixed;width:100%}.instance-table th,.instance-table td{overflow:hidden}.instance-table th:nth-child(1),.instance-table td:nth-child(1){width:8%;white-space:nowrap}.instance-table th:nth-child(2),.instance-table td:nth-child(2){width:26%}.instance-table th:nth-child(3),.instance-table td:nth-child(3){width:8%;white-space:nowrap}.instance-table th:nth-child(4),.instance-table td:nth-child(4){width:38%}.instance-table th:nth-child(5),.instance-table td:nth-child(5){width:20%}.instance-table .repo-path{display:block;max-width:100%;white-space:normal;word-break:break-all;color:#0f172a}.instance-table .url-line{display:block}.instance-table .url-text{display:block;line-height:1.45;word-break:break-all}.instance-table .url-line .secondary{margin-top:8px;width:86px;padding:8px 10px}.instance-table .row-actions{display:flex;gap:8px;flex-wrap:wrap}.instance-table td:nth-child(5) .small{margin-top:8px;max-width:100%;word-break:break-all}.instance-table td:nth-child(1) b{white-space:nowrap}.secret{filter:blur(5px);transition:filter .15s ease;cursor:default}.secret:hover,.secret:focus{filter:none}.secret-inline{display:inline-block}.secret-block{display:block}
+main{max-width:1280px}.instance-table{table-layout:fixed;width:100%}.instance-table th,.instance-table td{overflow:hidden}.instance-table th:nth-child(1),.instance-table td:nth-child(1){width:14%}.instance-table th:nth-child(2),.instance-table td:nth-child(2){width:24%}.instance-table th:nth-child(3),.instance-table td:nth-child(3){width:7%;white-space:nowrap}.instance-table th:nth-child(4),.instance-table td:nth-child(4){width:35%}.instance-table th:nth-child(5),.instance-table td:nth-child(5){width:20%}.instance-table .repo-path{display:block;max-width:100%;white-space:normal;word-break:break-all;color:#0f172a}.instance-table .url-line{display:block}.instance-table .url-text{display:block;line-height:1.45;word-break:break-all}.instance-table .url-line .secondary{margin-top:8px;width:86px;padding:8px 10px}.instance-table .row-actions{display:flex;gap:8px;flex-wrap:wrap}.instance-table td:nth-child(5) .small{margin-top:8px;max-width:100%;word-break:break-all}.instance-table td:nth-child(1) b{white-space:nowrap}.secret{filter:blur(5px);transition:filter .15s ease;cursor:default}.secret:hover,.secret:focus{filter:none}.secret-inline{display:inline-block}.secret-block{display:block}
 </style>
 </head>
 <body>
 <main>
   <h1>GPT Repo MCP 控制面板</h1>
   <div id="state" class="muted">正在加载...</div>
+
+  <section class="card">
+    <div class="funnel-control">
+      <div>
+        <h2>Funnel 访问控制</h2>
+        <div id="funnelStatus" class="muted">正在读取 Funnel 状态...</div>
+      </div>
+      <div class="row-actions">
+        <button id="startFunnelBtn" type="button" onclick="startFunnel()">开启 Funnel</button>
+        <button id="stopFunnelBtn" type="button" class="secondary" onclick="stopFunnel()">关闭 Funnel</button>
+      </div>
+    </div>
+    <div class="muted small" style="margin-top:10px">关闭 Funnel 只会断开 ChatGPT 使用的公网入口，不会停止下面正在运行的 MCP 服务器。</div>
+  </section>
 
   <section class="card">
     <h2>Node.js 端口监控</h2>
@@ -909,12 +957,22 @@ function setStatus(message, isError){
 }
 function setProxyStatus(data){
   var stateEl = document.getElementById('state');
+  var funnelStarted = Boolean(data.proxy && data.proxy.funnelStarted);
   stateEl.replaceChildren();
   stateEl.className = 'muted';
   stateEl.appendChild(document.createTextNode('面板：'));
   stateEl.appendChild(makeSecret('http://' + data.panel.host + ':' + data.panel.port, false));
-  stateEl.appendChild(document.createTextNode(' ｜ 代理：'));
-  stateEl.appendChild(makeSecret(data.proxy.publicBaseUrl, false));
+  stateEl.appendChild(document.createTextNode(' ｜ 本地代理：'));
+  stateEl.appendChild(makeSecret('http://' + data.proxy.host + ':' + data.proxy.port, false));
+
+  var funnelStatus = document.getElementById('funnelStatus');
+  funnelStatus.textContent = funnelStarted
+    ? 'Funnel 已开启，公网入口当前可用。'
+    : 'Funnel 已关闭，公网 URL 当前不可访问。MCP 服务器可以继续在本机运行。';
+  funnelStatus.className = funnelStarted ? 'ok' : 'warn';
+
+  document.getElementById('startFunnelBtn').disabled = funnelStarted;
+  document.getElementById('stopFunnelBtn').disabled = !funnelStarted;
 }
 function setPortsStatus(message, isError){
   var stateEl = document.getElementById('portsStatus');
@@ -1022,12 +1080,23 @@ function renderRows(items){
 
     var statusCell = document.createElement('td');
     var status = document.createElement('b');
-    status.className = item.running ? 'ok' : 'off';
-    status.textContent = item.running ? '运行中' : '已停止';
+    status.className = item.available ? 'ok' : (item.mcpRunning || item.funnelRunning ? 'warn' : 'off');
+    status.textContent = item.available ? '连接可用' : '连接不可用';
     statusCell.appendChild(status);
+
+    var mcpState = document.createElement('div');
+    mcpState.className = (item.mcpRunning ? 'ok' : 'off') + ' small status-line';
+    mcpState.textContent = 'MCP：' + (item.mcpRunning ? '运行中' : '已停止');
+    statusCell.appendChild(mcpState);
+
+    var funnelState = document.createElement('div');
+    funnelState.className = (item.funnelRunning ? 'ok' : 'warn') + ' small status-line';
+    funnelState.textContent = 'Funnel：' + (item.funnelRunning ? '已开启' : '已关闭');
+    statusCell.appendChild(funnelState);
+
     if (item.lastError) {
       var err = document.createElement('div');
-      err.className = 'off small';
+      err.className = 'off small status-line';
       err.textContent = item.lastError;
       statusCell.appendChild(err);
     }
@@ -1048,7 +1117,7 @@ function renderRows(items){
 
     var urlCell = document.createElement('td');
     urlCell.className = 'url';
-    if (item.url) {
+    if (item.available && item.url) {
       var urlLine = document.createElement('div');
       urlLine.className = 'url-line';
       var urlText = document.createElement('span');
@@ -1062,8 +1131,12 @@ function renderRows(items){
       urlLine.appendChild(urlText);
       urlLine.appendChild(copyBtn);
       urlCell.appendChild(urlLine);
+    } else if (item.mcpRunning && !item.funnelRunning) {
+      urlCell.textContent = 'Funnel 已关闭，公网 URL 当前已失效。';
+    } else if (!item.mcpRunning && item.funnelRunning) {
+      urlCell.textContent = 'Funnel 已开启，但 MCP 服务器未运行。';
     } else {
-      urlCell.textContent = '未启动';
+      urlCell.textContent = 'MCP 服务器和 Funnel 均未运行。';
     }
     row.appendChild(urlCell);
 
@@ -1140,6 +1213,33 @@ async function chooseRepoFolder(){
     var message = error && error.message ? error.message : String(error);
     setStatus('选择文件夹失败：' + message, true);
     window.alert('选择文件夹失败：' + message + '\\n\\n可以手动复制文件夹路径到输入框。');
+  }
+}
+
+async function startFunnel(){
+  try {
+    setStatus('正在开启 Funnel ...', false);
+    await api('/api/funnel/start', { method: 'POST' });
+    await refresh();
+    setStatus('Funnel 已开启。', false);
+  } catch (error) {
+    try { await refresh(); } catch {}
+    window.alert('开启 Funnel 失败：' + (error && error.message ? error.message : error));
+    setStatus('开启 Funnel 失败：' + (error && error.message ? error.message : error), true);
+  }
+}
+
+async function stopFunnel(){
+  if (!confirm('确认关闭 Funnel？MCP 服务器会继续运行，但 ChatGPT 将无法通过公网 URL 访问它们。')) return;
+  try {
+    setStatus('正在关闭 Funnel ...', false);
+    await api('/api/funnel/stop', { method: 'POST' });
+    await refresh();
+    setStatus('Funnel 已关闭，MCP 服务器仍保持原状态。', false);
+  } catch (error) {
+    try { await refresh(); } catch {}
+    window.alert('关闭 Funnel 失败：' + (error && error.message ? error.message : error));
+    setStatus('关闭 Funnel 失败：' + (error && error.message ? error.message : error), true);
   }
 }
 
@@ -1229,6 +1329,14 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.method === "GET" && url.pathname === "/api/state") return sendJson(res, listView());
+    if (req.method === "POST" && url.pathname === "/api/funnel/start") {
+      startProxyFunnel();
+      return sendJson(res, listView());
+    }
+    if (req.method === "POST" && url.pathname === "/api/funnel/stop") {
+      stopProxyFunnel();
+      return sendJson(res, listView());
+    }
     if (req.method === "GET" && url.pathname === "/api/ports") return sendJson(res, portsView(url.searchParams.get("ports")));
     if (req.method === "GET" && url.pathname === "/api/node-ports") return sendJson(res, nodePortsView());
     if (req.method === "POST" && url.pathname === "/api/select-folder") return sendJson(res, selectFolderDialog());
@@ -1270,6 +1378,7 @@ async function main() {
   try {
     proxyPort = await listenOnAvailablePort(proxyServer, proxyPort, proxyHost, "GPT Repo MCP Proxy", 0);
     proxyPublicBaseUrl = localProxyBaseUrl();
+    stopProxyFunnel(currentProxyHttpsPort(), true);
     console.log(`GPT Repo MCP Proxy: http://${proxyHost}:${proxyPort}`);
 
     const actualPanelPort = await listenOnAvailablePort(server, panelPort, host, "GPT Repo MCP Control Panel", 0);
@@ -1289,7 +1398,7 @@ await main();
 
 process.on("SIGINT", () => {
   for (const id of runtime.keys()) stopInstance(id);
-  stopProxyFunnel(Number(loadMainConfig().proxyHttpsPort ?? loadMainConfig().httpsPort ?? 443));
+  stopProxyFunnel(currentProxyHttpsPort(), true);
   process.exit(0);
 });
 

@@ -17,6 +17,7 @@ export const SERVER_INSTRUCTIONS = [
   "For continuity after an interruption or new turn, use repo_last_write to read safe receipt metadata, then repo_git_review for current git truth, then repo_write_stage_commit or repo_write_recover from review payloads.",
   "repo_write_recover is explicit path-only and can unstage, restore worktree paths, and clean configured artifacts; it does not reset, checkout, stash, clean, commit, push, or run shell commands.",
   "Use repo_plan_review before broad or ambiguous reviews. For code drilldown, use repo_tree for structure, repo_search for locating relevant code, repo_fetch_file for specific files, and repo_read_many only for bounded known sets.",
+  "Use repo_fetch_image when the user asks to inspect a specific PNG, JPEG, or WebP image in an approved repository. Image reads remain repo-scoped, size-limited, and subject to default excludes and secret-candidate path blocking.",
   "All paths are repo-relative POSIX paths and all repository access is scoped by repo_id.",
   "Default excludes and secret blocking are enforced by the server; do not ask for absolute paths or secrets.",
   "When a read, write, or cleanup policy question is blocked or the user asks what ChatGPT can access, call repo_policy_explain with the relevant repo_id and path before guessing. Use its code, matched_globs, effective_policy, local git operation toggles, and guidance to explain supported read/write/cleanup policy and enabled operation settings.",

@@ -9,6 +9,7 @@ import {
   codexReadSkillHandler,
   decisionMemoryHandler,
   fetchFileHandler,
+  fetchImageHandler,
   gitCommitHandler,
   gitDiffHandler,
   gitReviewHandler,
@@ -121,6 +122,15 @@ export const toolCatalog: ToolDefinition[] = [
     outputSchema: toolContracts.repo_fetch_file.output,
     annotations: readOnlyAnnotations,
     handler: fetchFileHandler
+  },
+  {
+    name: "repo_fetch_image",
+    title: "Fetch one image",
+    description: descriptions.repo_fetch_image,
+    inputSchema: toolContracts.repo_fetch_image.input,
+    outputSchema: toolContracts.repo_fetch_image.output,
+    annotations: readOnlyAnnotations,
+    handler: fetchImageHandler
   },
   {
     name: "repo_read_many",

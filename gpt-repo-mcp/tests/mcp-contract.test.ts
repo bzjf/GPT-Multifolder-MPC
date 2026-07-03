@@ -236,6 +236,30 @@ describe("MCP contract", () => {
               "openWorldHint": false,
               "readOnlyHint": true,
             },
+            "description": "Use this when the user asks to inspect a specific PNG, JPEG, or WebP image inside an approved repository. Returns image content to the client plus safe metadata; does not read arbitrary binary files.",
+            "inputKeys": [
+              "max_bytes",
+              "override_default_excludes",
+              "path",
+              "repo_id",
+            ],
+            "name": "repo_fetch_image",
+            "outputKeys": [
+              "mime_type",
+              "path",
+              "sha256",
+              "size_bytes",
+              "warnings",
+            ],
+            "title": "Fetch one image",
+          },
+          {
+            "annotations": {
+              "destructiveHint": false,
+              "idempotentHint": true,
+              "openWorldHint": false,
+              "readOnlyHint": true,
+            },
             "description": "Use this when the user asks to read a bounded set of explicit files or glob-matched files. Do not use this to read an entire repository.",
             "inputKeys": [
               "cursor",
@@ -1230,9 +1254,16 @@ describe("MCP contract", () => {
         expect(definition, name).toBeDefined();
         const parsed = definition!.outputSchema.safeParse(result.structuredContent);
         expect(parsed.error?.issues, name).toBeUndefined();
-        expect(result.content, name).toEqual([
-          expect.objectContaining({ type: "text", text: expect.any(String) })
-        ]);
+        if (name === "repo_fetch_image") {
+          expect(result.content, name).toEqual([
+            expect.objectContaining({ type: "text", text: expect.any(String) }),
+            expect.objectContaining({ type: "image", data: expect.any(String), mimeType: "image/png" })
+          ]);
+        } else {
+          expect(result.content, name).toEqual([
+            expect.objectContaining({ type: "text", text: expect.any(String) })
+          ]);
+        }
       }
     } finally {
       await close();
@@ -1247,6 +1278,7 @@ function representativeCalls(head: string): Record<string, Record<string, unknow
   repo_tree: { repo_id: "fixture", path: ".", max_depth: 2, page_size: 10 },
   repo_search: { repo_id: "fixture", query: "Fixture", max_results: 5 },
   repo_fetch_file: { repo_id: "fixture", path: "README.md", start_line: 1, end_line: 5 },
+  repo_fetch_image: { repo_id: "fixture", path: "fixture.png" },
   repo_read_many: { repo_id: "fixture", paths: ["README.md", "src/app.ts"], max_files: 2 },
   repo_git_status: { repo_id: "fixture" },
   repo_git_diff: { repo_id: "fixture" },
@@ -1357,6 +1389,7 @@ async function createRepoRoot() {
   await mkdir(join(root, "docs"), { recursive: true });
   await mkdir(join(root, ".chatgpt", "tool-tests"), { recursive: true });
   await writeFile(join(root, "README.md"), "# Fixture\n");
+  await writeFile(join(root, "fixture.png"), Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9WlX9qAAAAAASUVORK5CYII=", "base64"));
   await writeFile(join(root, "docs", "ARCHITECTURE.md"), "# Architecture\nDecision: keep tools read-only.\nConvention: use contracts first.\n");
   await writeFile(join(root, "TODO.md"), "- [ ] Wire repo_task_inventory\n");
   await writeFile(join(root, "package.json"), JSON.stringify({

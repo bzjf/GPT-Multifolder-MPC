@@ -5,6 +5,7 @@ import { CleanupService } from "../services/cleanup-service.js";
 import { RepoTreeService } from "../services/repo-tree-service.js";
 import { SearchService } from "../services/search-service.js";
 import { FileReader } from "../services/file-reader.js";
+import { ImageReader, type FetchImageOptions } from "../services/image-reader.js";
 import { GitService } from "../services/git-service.js";
 import { GitReviewService } from "../services/git-review-service.js";
 import { GitOperationsService } from "../services/git-operations-service.js";
@@ -127,6 +128,21 @@ export const fetchFileHandler: ToolHandler = async (input, context) => safeTool<
   const result = await new FileReader(new PathSandbox(repo.root)).read(args);
   audit({ tool: "repo_fetch_file", repo_id: args.repo_id, paths: [result.path], counts: { bytes: result.size_bytes }, truncated: result.truncated, warnings: result.warnings });
   return createSuccessEnvelope(result, `Read ${result.path}.`, { warnings: result.warnings });
+});
+
+export const fetchImageHandler: ToolHandler = async (input, context) => safeTool<FetchImageOptions & RepoInput>("repo_fetch_image", input, context, async (args) => {
+  const repo = context.registry.get(args.repo_id);
+  const image = await new ImageReader(new PathSandbox(repo.root)).read(args);
+  const { data, ...result } = image;
+  audit({ tool: "repo_fetch_image", repo_id: args.repo_id, paths: [result.path], counts: { bytes: result.size_bytes }, warnings: result.warnings });
+  return {
+    structuredContent: result,
+    content: [
+      { type: "text", text: `Read image ${result.path}.` },
+      { type: "image", data, mimeType: result.mime_type }
+    ],
+    _meta: { warnings: result.warnings }
+  } as CallToolResult;
 });
 
 export const readManyHandler: ToolHandler = async (input, context) => safeTool<ReadManyInput>("repo_read_many", input, context, async (args) => {
