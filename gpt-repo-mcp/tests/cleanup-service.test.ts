@@ -1,11 +1,12 @@
 import { execFile } from "node:child_process";
-import { access, mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, test } from "vitest";
 import { CleanupService } from "../src/services/cleanup-service.js";
 import { OperationsPolicy, type OperationsPolicyConfig } from "../src/services/operations-policy.js";
+import { createDirectoryLinkIfSupported } from "./helpers/symlink.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -142,9 +143,10 @@ describe("CleanupService", () => {
 
   test("cleanup rejects symlink escape", async () => {
     const fixture = await createCleanupFixture({ includeSymlink: true });
+    if (!fixture.linkedOutside) return;
     const service = createService(fixture.root);
 
-    await expect(service.cleanup({ paths: [".chatgpt/tool-tests/outside-link.txt"] })).rejects.toMatchObject({
+    await expect(service.cleanup({ paths: [".chatgpt/tool-tests/outside-link"] })).rejects.toMatchObject({
       code: "SYMLINK_ESCAPE_REJECTED"
     });
   });
@@ -199,7 +201,7 @@ function createService(root: string, config: OperationsPolicyConfig = {}) {
   }));
 }
 
-async function createCleanupFixture(options: { includeSymlink?: boolean } = {}): Promise<{ root: string; outside: string }> {
+async function createCleanupFixture(options: { includeSymlink?: boolean } = {}): Promise<{ root: string; outside: string; linkedOutside: boolean }> {
   const root = await mkdtemp(join(tmpdir(), "repo-reader-cleanup-"));
   const outside = await mkdtemp(join(tmpdir(), "repo-reader-cleanup-outside-"));
   await mkdir(join(root, ".chatgpt", "tool-tests", "nested"), { recursive: true });
@@ -217,10 +219,11 @@ async function createCleanupFixture(options: { includeSymlink?: boolean } = {}):
   await writeFile(join(root, ".env"), "TOKEN=value\n");
   await writeFile(join(root, "docs", "notes.md"), "notes\n");
   await writeFile(join(outside, "outside.txt"), "outside\n");
+  let linkedOutside = false;
   if (options.includeSymlink) {
-    await symlink(join(outside, "outside.txt"), join(root, ".chatgpt", "tool-tests", "outside-link.txt"));
+    linkedOutside = await createDirectoryLinkIfSupported(outside, join(root, ".chatgpt", "tool-tests", "outside-link"));
   }
-  return { root, outside };
+  return { root, outside, linkedOutside };
 }
 
 async function createGitCleanupFixture(): Promise<{ root: string }> {

@@ -9,10 +9,14 @@ const execFileAsync = promisify(execFile);
 export class GitService {
   constructor(private readonly root: string) {}
 
+  async headSha(): Promise<string> {
+    return (await this.git(["rev-parse", "HEAD"])).trim();
+  }
+
   async status() {
     const [branch, headSha, porcelain] = await Promise.all([
       this.git(["rev-parse", "--abbrev-ref", "HEAD"]),
-      this.git(["rev-parse", "HEAD"]),
+      this.headSha(),
       this.git(["status", "--porcelain=v1", "--untracked-files=all"])
     ]);
     const files = porcelain.split("\n").filter(Boolean).map(parseStatusLine);
@@ -23,7 +27,7 @@ export class GitService {
     }
     return {
       branch: branch.trim(),
-      head_sha: headSha.trim(),
+      head_sha: headSha,
       clean: files.length === 0,
       files,
       counts

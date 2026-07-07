@@ -12,6 +12,20 @@ export class SecretScanner {
     return false;
   }
 
+  hasSensitiveMatchCrossing(text: string, rangeStart: number, rangeEnd: number): boolean {
+    SECRET_VALUE_PATTERN.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = SECRET_VALUE_PATTERN.exec(text)) !== null) {
+      if (isPlaceholderSecret(match[0])) continue;
+      const matchStart = match.index;
+      const matchEnd = match.index + match[0].length;
+      const crossesStart = matchStart < rangeStart && matchEnd > rangeStart;
+      const crossesEnd = matchStart < rangeEnd && matchEnd > rangeEnd;
+      if (crossesStart || crossesEnd) return true;
+    }
+    return false;
+  }
+
   redact(text: string): string {
     SECRET_VALUE_PATTERN.lastIndex = 0;
     return text.replace(SECRET_VALUE_PATTERN, (match) => isPlaceholderSecret(match) ? match : "[REDACTED_SECRET]");

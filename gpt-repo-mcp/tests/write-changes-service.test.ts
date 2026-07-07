@@ -184,7 +184,7 @@ describe("WriteChangesService", () => {
 
     await expect(service.apply({
       changes: [
-        { type: "write", path: "docs/secret-management.md", content: "OPENAI_API_KEY=sk-realSecretValue123\n" }
+        { type: "write", path: "docs/secret-management.md", content: "OPENAI_API_KEY=" + ["sk", "realSecretValue123"].join("-") + "\n" }
       ]
     })).rejects.toMatchObject({ code: "SECRET_CANDIDATE_BLOCKED" });
   });
@@ -327,7 +327,7 @@ describe("WriteChangesService", () => {
     })).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
   });
 
-  test("partial apply failure reports applied paths failed path and recovery hint", async () => {
+  test("preflight failure leaves every requested path untouched", async () => {
     const fixture = await createRepoFixture();
     const service = createService(fixture.root, { enabled: true, allowed_globs: ["docs/**", "src/**"] });
 
@@ -337,19 +337,13 @@ describe("WriteChangesService", () => {
         { type: "append", path: "docs/guide.md", content: "Applied\n" },
         { type: "replace", path: "src/app.ts", find: "missingNeedle", replace: "safeFetch" }
       ]
-    })).rejects.toMatchObject({
-      code: "WRITE_FIND_NOT_FOUND",
-      diagnostics: {
-        applied_paths: ["docs/applied-a.md", "docs/guide.md"],
-        failed_path: "src/app.ts",
-        recovery_hint: expect.stringContaining("repo_git_review")
-      }
-    });
-    await expect(readFile(join(fixture.root, "docs", "applied-a.md"), "utf8")).resolves.toBe("A\n");
-    await expect(readFile(join(fixture.root, "docs", "guide.md"), "utf8")).resolves.toContain("Applied\n");
+    })).rejects.toMatchObject({ code: "WRITE_FIND_NOT_FOUND" });
+    await expect(access(join(fixture.root, "docs", "applied-a.md"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(join(fixture.root, "docs", "guide.md"), "utf8")).resolves.toBe("# Guide\nSearchable docs\n");
+    await expect(readFile(join(fixture.root, "src", "app.ts"), "utf8")).resolves.toContain("rawFetch");
   });
 
-  test("grouped edit partial failure reports previously applied top-level paths", async () => {
+  test("grouped edit preflight failure does not commit earlier prepared files", async () => {
     const fixture = await createRepoFixture();
     const service = createService(fixture.root, { enabled: true, allowed_globs: ["docs/**", "src/**"] });
 
@@ -365,15 +359,8 @@ describe("WriteChangesService", () => {
           ]
         }
       ]
-    })).rejects.toMatchObject({
-      code: "WRITE_FIND_NOT_FOUND",
-      diagnostics: {
-        applied_paths: ["docs/applied-a.md"],
-        failed_path: "src/app.ts",
-        recovery_hint: expect.stringContaining("repo_git_review")
-      }
-    });
-    await expect(readFile(join(fixture.root, "docs", "applied-a.md"), "utf8")).resolves.toBe("A\n");
+    })).rejects.toMatchObject({ code: "WRITE_FIND_NOT_FOUND" });
+    await expect(access(join(fixture.root, "docs", "applied-a.md"))).rejects.toMatchObject({ code: "ENOENT" });
     await expect(readFile(join(fixture.root, "src", "app.ts"), "utf8")).resolves.toContain("rawFetch");
   });
 

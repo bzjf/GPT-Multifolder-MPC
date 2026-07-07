@@ -1,7 +1,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -148,6 +148,52 @@ describe("MCP contract", () => {
               "openWorldHint": false,
               "readOnlyHint": true,
             },
+            "description": "Use this when the user asks which local Codex skills are installed. Returns SKILL.md frontmatter metadata only and does not read skill body content or arbitrary paths.",
+            "inputKeys": [
+              "include_plugins",
+              "include_system",
+              "include_user",
+              "max_results",
+            ],
+            "name": "codex_list_skills",
+            "outputKeys": [
+              "returned_count",
+              "skills",
+              "truncated",
+              "warnings",
+            ],
+            "title": "List local Codex skills",
+          },
+          {
+            "annotations": {
+              "destructiveHint": false,
+              "idempotentHint": true,
+              "openWorldHint": false,
+              "readOnlyHint": true,
+            },
+            "description": "Use this when the user asks to read a local Codex skill by name. Accepts a skill name and optional source only; does not accept arbitrary filesystem paths.",
+            "inputKeys": [
+              "max_bytes",
+              "name",
+              "source",
+            ],
+            "name": "codex_read_skill",
+            "outputKeys": [
+              "content",
+              "size_bytes",
+              "skill",
+              "truncated",
+              "warnings",
+            ],
+            "title": "Read local Codex skill",
+          },
+          {
+            "annotations": {
+              "destructiveHint": false,
+              "idempotentHint": true,
+              "openWorldHint": false,
+              "readOnlyHint": true,
+            },
             "description": "Use this when the user asks to inspect repository structure or locate likely files by directory. Do not use this when the user asks to read file contents.",
             "inputKeys": [
               "cursor",
@@ -205,8 +251,10 @@ describe("MCP contract", () => {
               "openWorldHint": false,
               "readOnlyHint": true,
             },
-            "description": "Use this when the user names a specific file or after repo_tree/repo_search identifies a relevant file. Supports line ranges. Do not use for broad repository review.",
+            "description": "Use this when the user names a specific text file or after repo_tree/repo_search identifies one. Supports line ranges, byte offsets, and cursor pagination for large UTF-8 files while keeping each response bounded. Do not use for broad repository review.",
             "inputKeys": [
+              "byte_offset",
+              "cursor",
               "end_line",
               "max_bytes",
               "override_default_excludes",
@@ -216,9 +264,16 @@ describe("MCP contract", () => {
             ],
             "name": "repo_fetch_file",
             "outputKeys": [
+              "byte_end",
+              "byte_start",
+              "chunk_sha256",
               "end_line",
+              "file_size_bytes",
               "language",
+              "mode",
+              "next_cursor",
               "path",
+              "returned_bytes",
               "sha256",
               "size_bytes",
               "start_line",
@@ -260,7 +315,7 @@ describe("MCP contract", () => {
               "openWorldHint": false,
               "readOnlyHint": true,
             },
-            "description": "Use this when the user asks to read a bounded set of explicit files or glob-matched files. Do not use this to read an entire repository.",
+            "description": "Use this when the user asks to read a bounded set of explicit files or glob-matched files. Large files return bounded first chunks with their own next_cursor values, and caller-supplied byte limits cannot exceed configured hard caps. Do not use this to read an entire repository.",
             "inputKeys": [
               "cursor",
               "exclude_globs",
@@ -1024,8 +1079,8 @@ describe("MCP contract", () => {
     }
   });
 
-  test("repo_write_changes partial failure exposes safe diagnostics in error envelope", async () => {
-    const { client, close } = await connectFixtureServer();
+  test("repo_write_changes preflight failure leaves requested paths untouched", async () => {
+    const { client, close, root } = await connectFixtureServer();
     try {
       const result = await client.callTool({
         name: "repo_write_changes",
@@ -1044,18 +1099,15 @@ describe("MCP contract", () => {
         ok: false,
         error: {
           code: "WRITE_FIND_NOT_FOUND",
-          retryable: false,
-          diagnostics: {
-            applied_paths: ["docs/applied-a.md", "docs/ARCHITECTURE.md"],
-            failed_path: "src/app.ts",
-            recovery_hint: expect.stringContaining("repo_git_review")
-          }
+          retryable: false
         }
       });
       const serialized = JSON.stringify(result.structuredContent);
       expect(serialized).not.toContain("/Users/");
       expect(serialized).not.toContain("A\\n");
       expect(serialized).not.toContain("Applied\\n");
+      await expect(access(join(root, "docs", "applied-a.md"))).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(readFile(join(root, "docs", "ARCHITECTURE.md"), "utf8")).resolves.not.toContain("Applied\n");
     } finally {
       await close();
     }
@@ -1376,6 +1428,7 @@ async function connectFixtureServer() {
   return {
     client,
     head,
+    root,
     close: async () => {
       await client.close();
       await server.close();

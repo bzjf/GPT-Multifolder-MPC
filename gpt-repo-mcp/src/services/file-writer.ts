@@ -41,8 +41,15 @@ export type WriteGroupedEditResult = Omit<WriteFileResult, "action" | "summary">
   summary: string;
 };
 
+export type PreparedWriteOperation = {
+  result: WriteFileResult | WriteGroupedEditResult;
+  absolutePath: string;
+  nextContent: Buffer;
+  createDirs: boolean;
+};
+
 export class FileWriter {
-  private readonly secretScanner = new SecretScanner();
+  private readonly contentScanner = new SecretScanner();
 
   constructor(
     private readonly root: string,
@@ -51,15 +58,26 @@ export class FileWriter {
   ) {}
 
   async write(input: Omit<WriteFileInput, "repo_id">): Promise<WriteFileResult> {
+    const prepared = await this.prepareWrite(input);
+    return this.commitPrepared(prepared) as Promise<WriteFileResult>;
+  }
+
+  async writeGroupedEdit(input: Omit<WriteGroupedEditChange, "type"> & { dry_run?: boolean }): Promise<WriteGroupedEditResult> {
+    const prepared = await this.prepareGroupedEdit(input);
+    return this.commitPrepared(prepared) as Promise<WriteGroupedEditResult>;
+  }
+
+  async prepareWrite(input: Omit<WriteFileInput, "repo_id">): Promise<PreparedWriteOperation> {
     const action = input.action ?? "write";
     const repoPath = validateRepoPath(input.path);
 
     this.policy.assertAllowed({ path: repoPath, bytes: 0, action });
 
-    const target = await this.resolveTarget(repoPath, Boolean(input.create_dirs));
+    const createDirs = Boolean(input.create_dirs);
+    const target = await this.resolveTarget(repoPath, createDirs);
     const computed = this.computeNextContent(action, input, target);
 
-    if (this.secretScanner.hasSecretValue(computed.nextText)) {
+    if (this.contentScanner.hasSecretValue(computed.nextText)) {
       throw new RepoReaderError("SECRET_CANDIDATE_BLOCKED", `Secret content blocked: ${repoPath}`);
     }
     this.policy.assertAllowed({ path: repoPath, bytes: computed.nextContent.byteLength, action });
@@ -71,29 +89,29 @@ export class FileWriter {
     const dryRun = input.dry_run ?? false;
     const bytesWritten = dryRun || !changed ? 0 : computed.nextContent.byteLength;
 
-    const result: WriteFileResult = {
-      ok: true,
-      path: repoPath,
-      action,
-      dry_run: dryRun,
-      changed,
-      created,
-      bytes_written: bytesWritten,
-      ...(oldSha256 ? { old_sha256: oldSha256 } : {}),
-      new_sha256: newSha256,
-      summary: summarize(repoPath, action, created, changed, dryRun),
-      warnings: []
+    return {
+      result: {
+        ok: true,
+        path: repoPath,
+        action,
+        dry_run: dryRun,
+        changed,
+        created,
+        bytes_written: bytesWritten,
+        ...(oldSha256 ? { old_sha256: oldSha256 } : {}),
+        new_sha256: newSha256,
+        summary: summarize(repoPath, action, created, changed, dryRun),
+        warnings: []
+      },
+      absolutePath: target.absolutePath,
+      nextContent: computed.nextContent,
+      createDirs
     };
-
-    if (dryRun || !changed) {
-      return result;
-    }
-
-    await atomicWriteFile(target.absolutePath, computed.nextContent);
-    return result;
   }
 
-  async writeGroupedEdit(input: Omit<WriteGroupedEditChange, "type"> & { dry_run?: boolean }): Promise<WriteGroupedEditResult> {
+  async prepareGroupedEdit(
+    input: Omit<WriteGroupedEditChange, "type"> & { dry_run?: boolean }
+  ): Promise<PreparedWriteOperation> {
     const repoPath = validateRepoPath(input.path);
 
     this.policy.assertAllowed({ path: repoPath, bytes: 0, action: "edit" });
@@ -107,7 +125,7 @@ export class FileWriter {
     }
 
     const nextText = applyGroupedEdits(target.oldText, input.edits, target.repoPath);
-    if (this.secretScanner.hasSecretValue(nextText)) {
+    if (this.contentScanner.hasSecretValue(nextText)) {
       throw new RepoReaderError("SECRET_CANDIDATE_BLOCKED", `Secret content blocked: ${repoPath}`);
     }
     const nextContent = Buffer.from(nextText, "utf8");
@@ -119,26 +137,86 @@ export class FileWriter {
     const dryRun = input.dry_run ?? false;
     const bytesWritten = dryRun || !changed ? 0 : nextContent.byteLength;
 
-    const result: WriteGroupedEditResult = {
-      ok: true,
-      path: repoPath,
-      action: "edit",
-      dry_run: dryRun,
-      changed,
-      created: false,
-      bytes_written: bytesWritten,
-      old_sha256: oldSha256,
-      new_sha256: newSha256,
-      summary: summarizeGroupedEdit(repoPath, input.edits.length, changed, dryRun),
-      warnings: []
+    return {
+      result: {
+        ok: true,
+        path: repoPath,
+        action: "edit",
+        dry_run: dryRun,
+        changed,
+        created: false,
+        bytes_written: bytesWritten,
+        old_sha256: oldSha256,
+        new_sha256: newSha256,
+        summary: summarizeGroupedEdit(repoPath, input.edits.length, changed, dryRun),
+        warnings: []
+      },
+      absolutePath: target.absolutePath,
+      nextContent,
+      createDirs: false
     };
+  }
 
-    if (dryRun || !changed) {
-      return result;
+  async commitPrepared(
+    prepared: PreparedWriteOperation
+  ): Promise<WriteFileResult | WriteGroupedEditResult> {
+    if (prepared.result.dry_run) {
+      return prepared.result;
     }
 
-    await atomicWriteFile(target.absolutePath, nextContent);
-    return result;
+    await this.assertPreparedTargetUnchanged(prepared);
+    if (!prepared.result.changed) {
+      return prepared.result;
+    }
+
+    if (prepared.createDirs) {
+      await this.ensureParentDirectory(prepared.result.path, true, true);
+    }
+    await atomicWriteFile(prepared.absolutePath, prepared.nextContent);
+    return prepared.result;
+  }
+
+  private async assertPreparedTargetUnchanged(prepared: PreparedWriteOperation): Promise<void> {
+    if (prepared.result.created) {
+      try {
+        await lstat(prepared.absolutePath);
+      } catch (error) {
+        if (isNotFoundError(error)) return;
+        throw error;
+      }
+      throw new RepoReaderError(
+        "WRITE_TARGET_EXISTS",
+        `File was created after write preparation: ${prepared.result.path}`,
+        { retryable: true }
+      );
+    }
+
+    const expectedSha256 = prepared.result.old_sha256;
+    if (!expectedSha256) {
+      throw new RepoReaderError("INTERNAL_ERROR", `Missing prepared file hash: ${prepared.result.path}`);
+    }
+
+    let currentContent: Buffer;
+    try {
+      currentContent = await readFile(prepared.absolutePath);
+    } catch (error) {
+      if (isNotFoundError(error)) {
+        throw new RepoReaderError(
+          "WRITE_TARGET_MISSING",
+          `File was removed after write preparation: ${prepared.result.path}`,
+          { retryable: true }
+        );
+      }
+      throw error;
+    }
+
+    if (sha256(currentContent) !== expectedSha256) {
+      throw new RepoReaderError(
+        "WRITE_STALE_EXPECTED_SHA",
+        `File changed after write preparation: ${prepared.result.path}`,
+        { retryable: true }
+      );
+    }
   }
 
   private computeNextContent(
@@ -147,10 +225,11 @@ export class FileWriter {
     target: WriteTarget
   ): ComputedWrite {
     if (action === "write") {
+      const content = requireContent(input, action);
       return {
         action,
-        nextText: requireContent(input, action),
-        nextContent: Buffer.from(requireContent(input, action), "utf8")
+        nextText: content,
+        nextContent: Buffer.from(content, "utf8")
       };
     }
 
@@ -209,15 +288,15 @@ export class FileWriter {
       }
     }
 
-    await this.ensureParentDirectory(repoPath, createDirs);
+    await this.ensureParentDirectory(repoPath, createDirs, false);
     return {
       exists: false,
       repoPath,
-      absolutePath: join(this.root, repoPath)
+      absolutePath: await resolveProspectiveTarget(this.root, repoPath)
     };
   }
 
-  private async ensureParentDirectory(repoPath: string, createDirs: boolean): Promise<void> {
+  private async ensureParentDirectory(repoPath: string, createDirs: boolean, mutate: boolean): Promise<void> {
     const parentPath = posix.dirname(repoPath);
     if (parentPath === ".") {
       await assertWithinRoot(this.root, this.root);
@@ -226,9 +305,19 @@ export class FileWriter {
 
     const segments = normalizeRepoPath(parentPath).split("/").filter(Boolean);
     let currentRepoPath = "";
+    let missingAncestor = false;
     for (const segment of segments) {
       currentRepoPath = currentRepoPath ? `${currentRepoPath}/${segment}` : segment;
       const absolutePath = join(this.root, currentRepoPath);
+
+      if (missingAncestor) {
+        if (mutate) {
+          await mkdir(absolutePath);
+          await assertWithinRoot(this.root, absolutePath);
+        }
+        continue;
+      }
+
       try {
         const stat = await lstat(absolutePath);
         if (stat.isBlockDevice() || stat.isCharacterDevice() || stat.isFIFO() || stat.isSocket()) {
@@ -245,11 +334,43 @@ export class FileWriter {
         if (!createDirs) {
           throw new RepoReaderError("WRITE_PARENT_MISSING", `Parent directory does not exist: ${parentPath}`);
         }
-        await mkdir(absolutePath);
-        await assertWithinRoot(this.root, absolutePath);
+        missingAncestor = true;
+        if (mutate) {
+          await mkdir(absolutePath);
+          await assertWithinRoot(this.root, absolutePath);
+        }
       }
     }
   }
+}
+
+async function resolveProspectiveTarget(root: string, repoPath: string): Promise<string> {
+  const segments = normalizeRepoPath(repoPath).split("/").filter(Boolean);
+  let currentAbsolutePath = await realpath(root);
+  let segmentIndex = 0;
+
+  for (; segmentIndex < segments.length - 1; segmentIndex += 1) {
+    const segment = segments[segmentIndex];
+    if (!segment) continue;
+    const candidatePath = join(currentAbsolutePath, segment);
+    try {
+      const candidateStat = await lstat(candidatePath);
+      if (!candidateStat.isDirectory() && !candidateStat.isSymbolicLink()) {
+        throw new RepoReaderError("UNSUPPORTED_FILE_TYPE", `Parent is not a directory: ${repoPath}`);
+      }
+      const resolvedCandidatePath = await realpath(candidatePath);
+      const resolvedCandidateStat = await lstat(resolvedCandidatePath);
+      if (!resolvedCandidateStat.isDirectory()) {
+        throw new RepoReaderError("UNSUPPORTED_FILE_TYPE", `Parent is not a directory: ${repoPath}`);
+      }
+      currentAbsolutePath = resolvedCandidatePath;
+    } catch (error) {
+      if (!isNotFoundError(error)) throw error;
+      break;
+    }
+  }
+
+  return join(currentAbsolutePath, ...segments.slice(segmentIndex));
 }
 
 function decodeUtf8(content: Buffer, repoPath: string): string {

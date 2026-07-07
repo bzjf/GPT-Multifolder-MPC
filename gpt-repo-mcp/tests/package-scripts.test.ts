@@ -28,6 +28,9 @@ describe("package startup scripts", () => {
     expect(pkg.scripts?.remove).toBe("node dist/cli/connect-gpt.js remove");
     expect(pkg.scripts?.list).toBe("node dist/cli/connect-gpt.js list");
     expect(pkg.scripts?.["check:config"]).toBe("node dist/cli/connect-gpt.js check");
+    expect(pkg.scripts?.["test:smoke"]).toBe("vitest run tests/mcp-contract.test.ts tests/tool-contracts.test.ts tests/file-reader.test.ts");
+    expect(pkg.scripts?.verify).toBe("npm run typecheck && npm run build && npm run test:smoke");
+    expect(pkg.scripts?.["verify:full"]).toBe("npm run typecheck && npm run build && npm test");
   });
 
   test("includes connect runner script and ngrok URL hints", async () => {
@@ -123,7 +126,7 @@ describe("package startup scripts", () => {
   });
 
   test("gitignore uses public-safe local artifact wording", async () => {
-    const gitignore = await readFile(join(process.cwd(), ".gitignore"), "utf8");
+    const gitignore = await readFile(new URL("../../.gitignore", import.meta.url), "utf8");
 
     expect(gitignore).toContain("# Local agent artifacts");
     expect(gitignore).toContain(".chatgpt/");

@@ -51,6 +51,8 @@ describe("tool catalog contracts", () => {
       "repo_list_roots",
       "repo_policy_explain",
       "repo_last_write",
+      "codex_list_skills",
+      "codex_read_skill",
       "repo_tree",
       "repo_search",
       "repo_fetch_file",
@@ -208,7 +210,7 @@ describe("tool catalog contracts", () => {
   });
 
   test("receipt files are ignored by git", () => {
-    const gitignore = readFileSync(".gitignore", "utf8");
+    const gitignore = readFileSync(new URL("../../.gitignore", import.meta.url), "utf8");
 
     expect(gitignore).toContain(".chatgpt/operations/*.json");
   });
@@ -647,9 +649,21 @@ describe("tool catalog contracts", () => {
     expect(example.limits).toEqual({
       max_files: 50,
       max_bytes_per_file: 128000,
-      max_total_bytes: 750000
+      max_total_bytes: 750000,
+      max_line_scan_bytes: 67108864
     });
     expect(raw).not.toContain("/absolute/path/to/repo");
+  });
+
+  test("repo_fetch_file advertises bounded pagination selectors", () => {
+    const fetchFile = toolCatalog.find((tool) => tool.name === "repo_fetch_file");
+    expect(fetchFile).toBeDefined();
+    expect(fetchFile!.inputSchema.shape.start_line).toBeDefined();
+    expect(fetchFile!.inputSchema.shape.end_line).toBeDefined();
+    expect(fetchFile!.inputSchema.shape.byte_offset).toBeDefined();
+    expect(fetchFile!.inputSchema.shape.cursor).toBeDefined();
+    expect(fetchFile!.inputSchema.safeParse({ repo_id: "fixture", path: "README.md", byte_offset: 10, max_bytes: 100 }).success).toBe(true);
+    expect(fetchFile!.inputSchema.safeParse({ repo_id: "fixture", path: "README.md", byte_offset: -1 }).success).toBe(false);
   });
 
   test("repo_read_many advertises exclude globs and file content output", () => {
@@ -663,11 +677,17 @@ describe("tool catalog contracts", () => {
     const parsed = outputSchema.safeParse({
       files: [{
         path: "README.md",
+        mode: "bytes",
+        file_size_bytes: 10,
+        returned_bytes: 10,
         size_bytes: 10,
         sha256: "abc",
+        chunk_sha256: "abc",
         total_lines: 1,
         start_line: 1,
         end_line: 1,
+        byte_start: 0,
+        byte_end: 10,
         truncated: false,
         text: "hello",
         warnings: []
@@ -790,6 +810,52 @@ describe("tool catalog contracts", () => {
             "openWorldHint": false,
             "readOnlyHint": true,
           },
+          "description": "Use this when the user asks which local Codex skills are installed. Returns SKILL.md frontmatter metadata only and does not read skill body content or arbitrary paths.",
+          "inputKeys": [
+            "include_plugins",
+            "include_system",
+            "include_user",
+            "max_results",
+          ],
+          "name": "codex_list_skills",
+          "outputKeys": [
+            "returned_count",
+            "skills",
+            "truncated",
+            "warnings",
+          ],
+          "title": "List local Codex skills",
+        },
+        {
+          "annotations": {
+            "destructiveHint": false,
+            "idempotentHint": true,
+            "openWorldHint": false,
+            "readOnlyHint": true,
+          },
+          "description": "Use this when the user asks to read a local Codex skill by name. Accepts a skill name and optional source only; does not accept arbitrary filesystem paths.",
+          "inputKeys": [
+            "max_bytes",
+            "name",
+            "source",
+          ],
+          "name": "codex_read_skill",
+          "outputKeys": [
+            "content",
+            "size_bytes",
+            "skill",
+            "truncated",
+            "warnings",
+          ],
+          "title": "Read local Codex skill",
+        },
+        {
+          "annotations": {
+            "destructiveHint": false,
+            "idempotentHint": true,
+            "openWorldHint": false,
+            "readOnlyHint": true,
+          },
           "description": "Use this when the user asks to inspect repository structure or locate likely files by directory. Do not use this when the user asks to read file contents.",
           "inputKeys": [
             "cursor",
@@ -847,8 +913,10 @@ describe("tool catalog contracts", () => {
             "openWorldHint": false,
             "readOnlyHint": true,
           },
-          "description": "Use this when the user names a specific file or after repo_tree/repo_search identifies a relevant file. Supports line ranges. Do not use for broad repository review.",
+          "description": "Use this when the user names a specific text file or after repo_tree/repo_search identifies one. Supports line ranges, byte offsets, and cursor pagination for large UTF-8 files while keeping each response bounded. Do not use for broad repository review.",
           "inputKeys": [
+            "byte_offset",
+            "cursor",
             "end_line",
             "max_bytes",
             "override_default_excludes",
@@ -858,9 +926,16 @@ describe("tool catalog contracts", () => {
           ],
           "name": "repo_fetch_file",
           "outputKeys": [
+            "byte_end",
+            "byte_start",
+            "chunk_sha256",
             "end_line",
+            "file_size_bytes",
             "language",
+            "mode",
+            "next_cursor",
             "path",
+            "returned_bytes",
             "sha256",
             "size_bytes",
             "start_line",
@@ -902,7 +977,7 @@ describe("tool catalog contracts", () => {
             "openWorldHint": false,
             "readOnlyHint": true,
           },
-          "description": "Use this when the user asks to read a bounded set of explicit files or glob-matched files. Do not use this to read an entire repository.",
+          "description": "Use this when the user asks to read a bounded set of explicit files or glob-matched files. Large files return bounded first chunks with their own next_cursor values, and caller-supplied byte limits cannot exceed configured hard caps. Do not use this to read an entire repository.",
           "inputKeys": [
             "cursor",
             "exclude_globs",

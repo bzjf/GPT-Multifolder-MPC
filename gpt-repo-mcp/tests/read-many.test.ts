@@ -30,6 +30,21 @@ describe("repo_read_many", () => {
     });
   });
 
+  test("rejects an invalid batch cursor", async () => {
+    const { context } = await createContext();
+
+    const result = await readManyHandler({
+      repo_id: "fixture",
+      paths: ["src/app.ts"],
+      cursor: "not-a-number"
+    }, context);
+
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      error: { code: "VALIDATION_ERROR" }
+    });
+  });
+
   test("reads explicit files and reports policy-blocked files as skipped", async () => {
     const { context } = await createContext();
 
@@ -85,7 +100,7 @@ describe("repo_read_many", () => {
     expect(second.next_cursor).toBeUndefined();
   });
 
-  test("enforces max_total_bytes and keeps stable skipped reason codes", async () => {
+  test("uses the remaining total-byte budget for a bounded chunk of the next file", async () => {
     const { context } = await createContext();
 
     const result = await callReadMany({
@@ -94,10 +109,11 @@ describe("repo_read_many", () => {
       max_total_bytes: 70
     }, context);
 
-    expect(result.files.map((file) => file.path)).toEqual(["src/app.ts"]);
-    expect(result.skipped).toEqual([
-      { path: "src/controllers.ts", reason: "MAX_TOTAL_BYTES_EXCEEDED" }
-    ]);
+    expect(result.files.map((file) => file.path)).toEqual(["src/app.ts", "src/controllers.ts"]);
+    expect(result.files.reduce((total, file) => total + file.returned_bytes, 0)).toBe(70);
+    expect(result.files[1]?.truncated).toBe(true);
+    expect(result.files[1]?.next_cursor).toEqual(expect.any(String));
+    expect(result.skipped).toEqual([]);
   });
 });
 

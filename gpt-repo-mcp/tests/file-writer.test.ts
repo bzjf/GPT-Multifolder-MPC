@@ -1,11 +1,12 @@
 import { createHash } from "node:crypto";
-import { readFile, symlink, writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { FileWriter } from "../src/services/file-writer.js";
 import { PathSandbox } from "../src/services/path-sandbox.js";
 import { WritePolicy, type WritePolicyConfig } from "../src/services/write-policy.js";
 import { createRepoFixture } from "./fixtures/repo-fixture.js";
+import { createDirectoryLinkIfSupported } from "./helpers/symlink.js";
 
 describe("FileWriter", () => {
   test("write creates missing file", async () => {
@@ -384,7 +385,8 @@ describe("FileWriter", () => {
   test("symlink escape rejected", async () => {
     const fixture = await createRepoFixture();
     const writer = createWriter(fixture.root, { enabled: true, allowed_globs: ["**"] });
-    await symlink(fixture.outside, join(fixture.root, "docs", "outside-dir"));
+    const linked = await createDirectoryLinkIfSupported(fixture.outside, join(fixture.root, "docs", "outside-dir"));
+    if (!linked) return;
 
     await expect(writer.write({
       path: "docs/outside-dir/escape.md",

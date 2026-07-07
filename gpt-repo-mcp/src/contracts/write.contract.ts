@@ -56,7 +56,7 @@ export const WriteFileResultSchema = z.object({
 });
 
 export const WriteChangesInputSchema = RepoInputSchema.extend({
-  changes: z.array(WriteChangeSchema).min(1).max(25).describe("Ordered edit pack of one-file write or exact-match edit changes to apply. Changes are applied sequentially and no git stage or commit is performed."),
+  changes: z.array(WriteChangeSchema).min(1).max(25).describe("Ordered edit pack of one-file write or exact-match edit changes. All changes are prepared and validated before writes begin; successful preparations are then committed in request order. No git stage or commit is performed."),
   dry_run: z.boolean().optional().describe("Validate and preview the edit pack without writing files. Dry run is optional and is not required before applying changes."),
   reason: z.string().min(1).optional().describe("Short human-readable reason for the edit-pack request, useful for audit context.")
 });

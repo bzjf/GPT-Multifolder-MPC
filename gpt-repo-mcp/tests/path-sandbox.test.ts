@@ -1,9 +1,10 @@
-import { mkdir, symlink, writeFile } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { mkdtemp } from "node:fs/promises";
 import { describe, expect, test } from "vitest";
 import { PathSandbox } from "../src/services/path-sandbox.js";
+import { createDirectoryLinkIfSupported } from "./helpers/symlink.js";
 
 describe("PathSandbox", () => {
   test("rejects absolute model-supplied paths", async () => {
@@ -27,12 +28,12 @@ describe("PathSandbox", () => {
   test("rejects symlink escapes", async () => {
     const root = await mkdtemp(join(tmpdir(), "repo-reader-"));
     const outside = await mkdtemp(join(tmpdir(), "repo-reader-outside-"));
-    await writeFile(join(outside, "secret.txt"), "secret");
-    await symlink(join(outside, "secret.txt"), join(root, "linked-secret.txt"));
+    const linked = await createDirectoryLinkIfSupported(outside, join(root, "linked-outside"));
+    if (!linked) return;
 
     const sandbox = new PathSandbox(root);
 
-    await expect(sandbox.resolve("linked-secret.txt")).rejects.toMatchObject({
+    await expect(sandbox.resolve("linked-outside")).rejects.toMatchObject({
       code: "SYMLINK_ESCAPE_REJECTED"
     });
   });

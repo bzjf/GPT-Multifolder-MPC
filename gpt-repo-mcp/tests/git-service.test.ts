@@ -10,6 +10,16 @@ import { GitService } from "../src/services/git-service.js";
 const execFileAsync = promisify(execFile);
 
 describe("GitService", () => {
+  test("reads HEAD without collecting branch or worktree status", async () => {
+    const root = await createGitFixture();
+    const expected = (await execFileAsync("git", ["rev-parse", "HEAD"], {
+      cwd: root,
+      env: { PATH: process.env.PATH ?? "" }
+    })).stdout.trim();
+
+    await expect(new GitService(root).headSha()).resolves.toBe(expected);
+  });
+
   test("parses porcelain status including rename paths", async () => {
     const root = await createGitFixture();
     await rename(join(root, "src", "app.ts"), join(root, "src", "main.ts"));

@@ -1,11 +1,13 @@
+import { isAbsolute, relative, resolve, sep } from "node:path";
 import type { WriteChange, WriteChangesInput, WriteChangesResult, WriteSimpleChange } from "../contracts/write.contract.js";
 import { RepoReaderError } from "../runtime/errors.js";
-import { FileWriter } from "./file-writer.js";
+import { FileWriter, type PreparedWriteOperation } from "./file-writer.js";
 import { PathSandbox, validateRepoPath } from "./path-sandbox.js";
 import { WritePolicy } from "./write-policy.js";
 
 const MAX_CHANGES_PER_PACK = 25;
 const MAX_TOTAL_CHANGE_CONTENT_BYTES = 5 * 1024 * 1024;
+const PREPARE_CONCURRENCY = 4;
 const NEXT_STEPS = [
   "Run repo_git_review to inspect the resulting diff.",
   "If the edit pack is wrong, use git recovery/restore workflow before committing.",
@@ -28,17 +30,32 @@ export class WriteChangesService {
     if (totalPayloadBytes(input.changes) > MAX_TOTAL_CHANGE_CONTENT_BYTES) {
       throw new RepoReaderError("SIZE_LIMIT_EXCEEDED", `Edit pack exceeds maximum total content bytes: ${MAX_TOTAL_CHANGE_CONTENT_BYTES}`);
     }
-    assertUniqueTargetPaths(input.changes);
+    assertNonConflictingTargetPaths(input.changes);
 
     const dryRun = input.dry_run ?? false;
+    // Phase 1: read, validate, scan, and compute every target without mutating the repository.
+    // Bounded concurrency overlaps independent file I/O while preserving result order.
+    const prepared = await prepareWithConcurrency(
+      input.changes,
+      PREPARE_CONCURRENCY,
+      async (change) => change.type === "edit"
+        ? this.writer.prepareGroupedEdit({ path: change.path, edits: change.edits, dry_run: dryRun })
+        : this.writer.prepareWrite(toWriteFileInput(change, dryRun))
+    );
+    assertPreparedTargetsDoNotConflict(prepared);
+
     const appliedPaths: string[] = [];
     const files: WriteChangesResult["files"] = [];
 
-    for (const change of input.changes) {
+    // Phase 2: only after every preparation succeeds, commit writes in request order.
+    for (let index = 0; index < prepared.length; index += 1) {
+      const operation = prepared[index];
+      const change = input.changes[index];
+      if (!operation || !change) continue;
       try {
-        const result = change.type === "edit"
-          ? await this.writer.writeGroupedEdit({ path: change.path, edits: change.edits, dry_run: dryRun })
-          : await this.writer.write(toWriteFileInput(change, dryRun));
+        const result = dryRun
+          ? operation.result
+          : await this.writer.commitPrepared(operation);
         files.push({
           path: result.path,
           type: result.action,
@@ -80,6 +97,41 @@ export class WriteChangesService {
   }
 }
 
+async function prepareWithConcurrency<T, TResult>(
+  items: T[],
+  concurrency: number,
+  prepare: (item: T, index: number) => Promise<TResult>
+): Promise<TResult[]> {
+  const results = new Array<TResult>(items.length);
+  const failures: Array<{ index: number; error: unknown }> = [];
+  let nextIndex = 0;
+
+  const worker = async (): Promise<void> => {
+    while (true) {
+      const index = nextIndex;
+      nextIndex += 1;
+      if (index >= items.length) return;
+      const item = items[index];
+      if (item === undefined) return;
+      try {
+        results[index] = await prepare(item, index);
+      } catch (error) {
+        failures.push({ index, error });
+      }
+    }
+  };
+
+  const workerCount = Math.min(Math.max(1, concurrency), items.length);
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+
+  if (failures.length > 0) {
+    failures.sort((a, b) => a.index - b.index);
+    const firstFailure = failures[0];
+    if (firstFailure) throw firstFailure.error;
+  }
+  return results;
+}
+
 function toWriteFileInput(change: WriteSimpleChange, dryRun: boolean) {
   return {
     path: change.path,
@@ -92,15 +144,72 @@ function toWriteFileInput(change: WriteSimpleChange, dryRun: boolean) {
   };
 }
 
-function assertUniqueTargetPaths(changes: WriteChange[]): void {
-  const seen = new Set<string>();
+function assertNonConflictingTargetPaths(changes: WriteChange[]): void {
+  const seen: Array<{ path: string; key: string }> = [];
   for (const change of changes) {
-    const normalized = safeDuplicatePathKey(change.path);
-    if (seen.has(normalized)) {
-      throw new RepoReaderError("VALIDATION_ERROR", `Edit pack contains multiple changes for the same path: ${normalized}`);
+    const path = normalizeTargetPath(change.path);
+    const key = pathComparisonKey(path);
+    const conflict = seen.find((candidate) => repoPathsConflict(candidate.key, key));
+    if (conflict) {
+      throw new RepoReaderError(
+        "VALIDATION_ERROR",
+        `Edit pack contains conflicting target paths: ${conflict.path} and ${path}`
+      );
     }
-    seen.add(normalized);
+    seen.push({ path, key });
   }
+}
+
+function assertPreparedTargetsDoNotConflict(prepared: PreparedWriteOperation[]): void {
+  const seen: PreparedWriteOperation[] = [];
+  for (const operation of prepared) {
+    const conflict = seen.find((candidate) =>
+      absolutePathsConflict(candidate.absolutePath, operation.absolutePath)
+    );
+    if (conflict) {
+      throw new RepoReaderError(
+        "VALIDATION_ERROR",
+        `Edit pack resolves to conflicting targets: ${conflict.result.path} and ${operation.result.path}`
+      );
+    }
+    seen.push(operation);
+  }
+}
+
+function normalizeTargetPath(path: string): string {
+  const normalized = validateRepoPath(path).replace(/\/+$/, "");
+  return normalized || ".";
+}
+
+function pathComparisonKey(path: string): string {
+  return process.platform === "win32" || process.platform === "darwin"
+    ? path.toLowerCase()
+    : path;
+}
+
+function repoPathsConflict(left: string, right: string): boolean {
+  const leftParts = left.split("/");
+  const rightParts = right.split("/");
+  return isSegmentPrefix(leftParts, rightParts) || isSegmentPrefix(rightParts, leftParts);
+}
+
+function isSegmentPrefix(prefix: string[], candidate: string[]): boolean {
+  return prefix.length <= candidate.length
+    && prefix.every((segment, index) => candidate[index] === segment);
+}
+
+function absolutePathsConflict(left: string, right: string): boolean {
+  const resolvedLeft = resolve(left);
+  const resolvedRight = resolve(right);
+  return isWithinAbsolutePath(resolvedLeft, resolvedRight)
+    || isWithinAbsolutePath(resolvedRight, resolvedLeft);
+}
+
+function isWithinAbsolutePath(parent: string, target: string): boolean {
+  const rel = relative(parent, target);
+  if (rel === "") return true;
+  const firstSegment = rel.split(sep)[0];
+  return firstSegment !== ".." && !isAbsolute(rel);
 }
 
 function unique(paths: string[]): string[] {
@@ -153,10 +262,3 @@ function safeFailedPath(path: string): string | undefined {
   }
 }
 
-function safeDuplicatePathKey(path: string): string {
-  try {
-    return validateRepoPath(path);
-  } catch {
-    return path;
-  }
-}

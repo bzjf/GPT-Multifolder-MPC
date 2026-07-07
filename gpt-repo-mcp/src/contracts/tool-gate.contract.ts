@@ -8,7 +8,7 @@ export const ToolGateInputSchema = z.object({
   mcp_code: ToolGateCodeFieldSchema
 });
 
-export function withToolGateCode<T extends z.ZodRawShape>(schema: z.ZodObject<T>): z.ZodObject<T & { mcp_code: typeof ToolGateCodeFieldSchema }> {
+export function withToolGateCode<T extends z.ZodRawShape>(schema: z.ZodObject<T>) {
   return schema.extend({ mcp_code: ToolGateCodeFieldSchema });
 }
 

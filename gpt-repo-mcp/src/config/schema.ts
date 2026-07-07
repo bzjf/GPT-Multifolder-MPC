@@ -33,6 +33,7 @@ export const LimitsConfigSchema = z.object({
   max_files: PositiveIntSchema.optional(),
   max_bytes_per_file: PositiveIntSchema.optional(),
   max_total_bytes: PositiveIntSchema.optional(),
+  max_line_scan_bytes: PositiveIntSchema.optional(),
   max_search_results: PositiveIntSchema.optional(),
   max_tree_entries: PositiveIntSchema.optional(),
   max_task_inventory_files: PositiveIntSchema.optional(),

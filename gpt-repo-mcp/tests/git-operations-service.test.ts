@@ -836,6 +836,7 @@ async function createGitFixture(): Promise<{ root: string; head: string }> {
   await writeFile(join(root, "docs", "b.md"), "B\n");
   await writeFile(join(root, ".env"), "TOKEN=value\n");
   await git(root, ["init"]);
+  await configureGitLineEndings(root);
   await git(root, ["config", "user.email", "test@example.com"]);
   await git(root, ["config", "user.name", "Test User"]);
   await git(root, ["add", "--", "docs/a.md", "docs/b.md"]);
@@ -851,6 +852,7 @@ async function createGitFixtureWithoutLocalIdentity(): Promise<{ root: string; h
   await mkdir(join(root, "docs"), { recursive: true });
   await writeFile(join(root, "docs", "a.md"), "A\n");
   await git(root, ["init"]);
+  await configureGitLineEndings(root);
   await git(root, ["add", "--", "docs/a.md"]);
   await git(root, ["-c", "user.name=Initial User", "-c", "user.email=initial@example.com", "commit", "-m", "initial"]);
   const head = await headSha(root);
@@ -865,6 +867,7 @@ async function createRecoverFixture(options: { changedPath?: "docs/a.md" | undef
   await writeFile(join(root, "docs", "a.md"), "A\n");
   await writeFile(join(root, "docs", "b.md"), "B\n");
   await git(root, ["init"]);
+  await configureGitLineEndings(root);
   await git(root, ["config", "user.email", "test@example.com"]);
   await git(root, ["config", "user.name", "Test User"]);
   await git(root, ["add", "--", "docs/a.md", "docs/b.md"]);
@@ -891,6 +894,11 @@ async function worktreePaths(root: string): Promise<string[]> {
 
 async function headSha(root: string): Promise<string> {
   return (await git(root, ["rev-parse", "HEAD"])).trim();
+}
+
+async function configureGitLineEndings(root: string): Promise<void> {
+  await git(root, ["config", "core.autocrlf", "false"]);
+  await git(root, ["config", "core.eol", "lf"]);
 }
 
 async function git(root: string, args: string[]): Promise<string> {

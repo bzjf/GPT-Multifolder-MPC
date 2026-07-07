@@ -18,7 +18,8 @@ const ConfigSchema = z.object({
   limits: z.object({
     max_files: z.number().int().positive().optional(),
     max_bytes_per_file: z.number().int().positive().optional(),
-    max_total_bytes: z.number().int().positive().optional()
+    max_total_bytes: z.number().int().positive().optional(),
+    max_line_scan_bytes: z.number().int().positive().optional()
   }).default({})
 });
 
@@ -41,7 +42,8 @@ export class RootRegistry {
     return new RootRegistry(repos, {
       max_files: parsed.limits.max_files ?? DEFAULT_LIMITS.max_files,
       max_bytes_per_file: parsed.limits.max_bytes_per_file ?? DEFAULT_LIMITS.max_bytes_per_file,
-      max_total_bytes: parsed.limits.max_total_bytes ?? DEFAULT_LIMITS.max_total_bytes
+      max_total_bytes: parsed.limits.max_total_bytes ?? DEFAULT_LIMITS.max_total_bytes,
+      max_line_scan_bytes: parsed.limits.max_line_scan_bytes ?? DEFAULT_LIMITS.max_line_scan_bytes
     });
   }
 

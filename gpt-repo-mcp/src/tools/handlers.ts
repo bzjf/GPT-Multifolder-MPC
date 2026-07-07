@@ -125,9 +125,17 @@ export const searchHandler: ToolHandler = async (input, context) => safeTool<Sea
 
 export const fetchFileHandler: ToolHandler = async (input, context) => safeTool<FetchFileOptions & RepoInput>("repo_fetch_file", input, context, async (args) => {
   const repo = context.registry.get(args.repo_id);
-  const result = await new FileReader(new PathSandbox(repo.root)).read(args);
-  audit({ tool: "repo_fetch_file", repo_id: args.repo_id, paths: [result.path], counts: { bytes: result.size_bytes }, truncated: result.truncated, warnings: result.warnings });
-  return createSuccessEnvelope(result, `Read ${result.path}.`, { warnings: result.warnings });
+  const result = await new FileReader(
+    new PathSandbox(repo.root),
+    context.registry.limits.max_bytes_per_file,
+    context.registry.limits.max_line_scan_bytes
+  ).read(args);
+  audit({ tool: "repo_fetch_file", repo_id: args.repo_id, paths: [result.path], counts: { bytes: result.returned_bytes }, truncated: result.truncated, warnings: result.warnings });
+  return createSuccessEnvelope(
+    result,
+    result.truncated ? `Read a bounded chunk of ${result.path}; continue with next_cursor.` : `Read ${result.path}.`,
+    { warnings: result.warnings }
+  );
 });
 
 export const fetchImageHandler: ToolHandler = async (input, context) => safeTool<FetchImageOptions & RepoInput>("repo_fetch_image", input, context, async (args) => {
@@ -353,12 +361,10 @@ export const writeFileHandler: ToolHandler = async (input, context) => safeTool<
   const headShaBefore = await readHeadSha(repo.root);
   const result = await new FileWriter(repo.root, sandbox, new WritePolicy(repo.writes)).write(args);
   if (!result.dry_run && result.changed) {
-    const headShaAfter = await readHeadSha(repo.root);
     const receipt = await new OperationReceiptService(repo.root).writeLastWrite({
       tool: "repo_write_file",
       repo_id: args.repo_id,
       ...(headShaBefore ? { head_sha_before: headShaBefore } : {}),
-      ...(headShaAfter ? { head_sha_after: headShaAfter } : {}),
       touched_paths: [result.path],
       changed_paths: [result.path],
       created_paths: result.created ? [result.path] : [],
@@ -389,12 +395,10 @@ export const writeChangesHandler: ToolHandler = async (input, context) => safeTo
   const headShaBefore = await readHeadSha(repo.root);
   const result = await new WriteChangesService(repo.root, sandbox, new WritePolicy(repo.writes)).apply(args);
   if (!result.dry_run && result.changed_paths.length > 0) {
-    const headShaAfter = await readHeadSha(repo.root);
     const receipt = await new OperationReceiptService(repo.root).writeLastWrite({
       tool: "repo_write_changes",
       repo_id: args.repo_id,
       ...(headShaBefore ? { head_sha_before: headShaBefore } : {}),
-      ...(headShaAfter ? { head_sha_after: headShaAfter } : {}),
       touched_paths: result.files.map((file) => file.path),
       changed_paths: result.changed_paths,
       created_paths: result.files.filter((file) => file.changed && file.created).map((file) => file.path),
@@ -451,7 +455,7 @@ async function safeTool<TInput extends Record<string, unknown>>(
 
 async function readHeadSha(root: string): Promise<string | undefined> {
   try {
-    return (await new GitService(root).status()).head_sha;
+    return await new GitService(root).headSha();
   } catch {
     return undefined;
   }

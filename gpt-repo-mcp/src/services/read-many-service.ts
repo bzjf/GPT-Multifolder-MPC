@@ -36,31 +36,53 @@ export class ReadManyService {
       throw new RepoReaderError("VALIDATION_ERROR", "repo_read_many requires paths or include_globs.");
     }
 
-    const reader = new FileReader(this.sandbox);
+    const reader = new FileReader(
+      this.sandbox,
+      this.limits.max_bytes_per_file,
+      this.limits.max_line_scan_bytes
+    );
     const paths = await this.expandPaths(options);
     const start = parseCursor(options.cursor);
+    if (start > paths.length) {
+      throw new RepoReaderError("VALIDATION_ERROR", `repo_read_many cursor ${start} is beyond the matched file count ${paths.length}.`);
+    }
     const maxFiles = Math.min(options.max_files ?? this.limits.max_files, this.limits.max_files);
-    const maxTotalBytes = options.max_total_bytes ?? this.limits.max_total_bytes;
+    const maxBytesPerFile = Math.min(
+      options.max_bytes_per_file ?? this.limits.max_bytes_per_file,
+      this.limits.max_bytes_per_file
+    );
+    const maxTotalBytes = Math.min(
+      options.max_total_bytes ?? this.limits.max_total_bytes,
+      this.limits.max_total_bytes
+    );
     const window = paths.slice(start, start + maxFiles);
     const files: ReadManyResult["files"] = [];
     const skipped: ReadManyResult["skipped"] = [];
     let totalBytes = 0;
+    let consumed = 0;
 
     for (const path of window) {
+      const remainingBytes = maxTotalBytes - totalBytes;
+      if (remainingBytes <= 0) break;
       try {
-        const file = await reader.read({ path, max_bytes: options.max_bytes_per_file });
-        if (totalBytes + file.size_bytes > maxTotalBytes) {
-          skipped.push({ path, reason: "MAX_TOTAL_BYTES_EXCEEDED" });
-          continue;
-        }
-        totalBytes += file.size_bytes;
+        const file = await reader.read({
+          path,
+          max_bytes: Math.min(maxBytesPerFile, remainingBytes)
+        });
+        totalBytes += file.returned_bytes;
         files.push(file);
+        consumed += 1;
       } catch (error) {
-        skipped.push({ path, reason: toRepoReaderError(error).code });
+        const readerError = toRepoReaderError(error);
+        if (readerError.code === "PAGE_BUDGET_TOO_SMALL" && totalBytes > 0) {
+          break;
+        }
+        skipped.push({ path, reason: readerError.code });
+        consumed += 1;
       }
     }
 
-    const nextIndex = start + window.length;
+    const nextIndex = start + consumed;
     const truncated = nextIndex < paths.length;
     return {
       files,
@@ -89,9 +111,13 @@ export class ReadManyService {
 }
 
 function parseCursor(cursor?: string): number {
-  if (!cursor) {
-    return 0;
+  if (cursor === undefined) return 0;
+  if (!/^\d+$/.test(cursor) || cursor.length > 32) {
+    throw new RepoReaderError("VALIDATION_ERROR", "repo_read_many cursor must be a non-negative integer string.");
   }
-  const parsed = Number.parseInt(cursor, 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+  const parsed = Number(cursor);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) {
+    throw new RepoReaderError("VALIDATION_ERROR", "repo_read_many cursor is outside the supported integer range.");
+  }
+  return parsed;
 }

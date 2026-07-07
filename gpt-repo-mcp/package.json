@@ -44,7 +44,10 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "check:public": "node scripts/check-public.mjs",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:smoke": "vitest run tests/mcp-contract.test.ts tests/tool-contracts.test.ts tests/file-reader.test.ts",
+    "verify": "npm run typecheck && npm run build && npm run test:smoke",
+    "verify:full": "npm run typecheck && npm run build && npm test"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

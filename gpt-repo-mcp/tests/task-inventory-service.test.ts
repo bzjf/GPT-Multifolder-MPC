@@ -74,21 +74,28 @@ describe("TaskInventoryService", () => {
   test("scans internal tree pages before paginating task results", async () => {
     const fixture = await createRepoFixture();
     await mkdir(join(fixture.root, "many"), { recursive: true });
-    for (let index = 0; index < 2005; index += 1) {
-      await writeFile(join(fixture.root, "many", `file-${String(index).padStart(4, "0")}.ts`), "export const value = true;\n");
+    for (let index = 0; index < 40; index += 1) {
+      await writeFile(join(fixture.root, "many", `file-${String(index).padStart(2, "0")}.ts`), "export const value = true;\n");
     }
-    await writeFile(join(fixture.root, "many", "file-2004.ts"), "// TODO: task past first tree page\n");
+    await writeFile(join(fixture.root, "many", "file-39.ts"), "// TODO: task past first tree page\n");
 
-    const result = await new TaskInventoryService(fixture.root, new PathSandbox(fixture.root)).inventory({
-      include_globs: ["many/**/*.ts"]
-    });
+    const previousTreeEntries = DEFAULT_LIMITS.max_tree_entries;
+    try {
+      (DEFAULT_LIMITS as { max_tree_entries: number }).max_tree_entries = 10;
 
-    expect(result.tasks).toEqual([
-      expect.objectContaining({ path: "many/file-2004.ts", kind: "todo" })
-    ]);
-    expect(result.matched_count).toBe(1);
-    expect(result.scan_complete).toBe(true);
-    expect(result.warnings).not.toContain("SCAN_TREE_PAGE_LIMIT_REACHED");
+      const result = await new TaskInventoryService(fixture.root, new PathSandbox(fixture.root)).inventory({
+        include_globs: ["many/**/*.ts"]
+      });
+
+      expect(result.tasks).toEqual([
+        expect.objectContaining({ path: "many/file-39.ts", kind: "todo" })
+      ]);
+      expect(result.matched_count).toBe(1);
+      expect(result.scan_complete).toBe(true);
+      expect(result.warnings).not.toContain("SCAN_TREE_PAGE_LIMIT_REACHED");
+    } finally {
+      (DEFAULT_LIMITS as { max_tree_entries: number }).max_tree_entries = previousTreeEntries;
+    }
   });
 
   test("reports file limit instead of tree page limit when file cap stops scan first", async () => {

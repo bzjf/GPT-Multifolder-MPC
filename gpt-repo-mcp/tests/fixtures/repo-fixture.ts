@@ -1,4 +1,4 @@
-import { mkdir, symlink, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -42,7 +42,6 @@ export async function createRepoFixture(): Promise<RepoFixture> {
   await writeFile(join(root, "vendor", "submodule", ".git"), "gitdir: ../.git/modules/vendor/submodule\n");
   await writeFile(join(root, "vendor", "submodule", "README.md"), "# submodule\n");
   await writeFile(join(outside, "secret.txt"), "outside secret\n");
-  await symlink(join(outside, "secret.txt"), join(root, "linked-secret.txt"));
 
   return { root, outside };
 }
