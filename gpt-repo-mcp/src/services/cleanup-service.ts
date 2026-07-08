@@ -4,6 +4,7 @@ import { lstat, readdir, realpath, rm } from "node:fs/promises";
 import { join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { RepoReaderError } from "../runtime/errors.js";
+import { invalidateRepoCaches } from "../runtime/repo-cache.js";
 import { IgnoreEngine } from "./ignore-engine.js";
 import { validateRepoPath } from "./path-sandbox.js";
 import { OperationsPolicy } from "./operations-policy.js";
@@ -35,6 +36,9 @@ export class CleanupService {
     if (!input.dry_run) {
       for (const target of existingTargets) {
         await rm(target.absolutePath, { recursive: target.type === "directory" });
+      }
+      if (existingTargets.length > 0) {
+        invalidateRepoCaches(this.root);
       }
     }
 

@@ -24,6 +24,7 @@ export const SearchResponseSchema = z.object({
   results: z.array(SearchResultSchema),
   matched_count: z.number().int().nonnegative(),
   returned_count: z.number().int().nonnegative(),
+  scan_complete: z.boolean(),
   truncated: z.boolean(),
   next_cursor: z.string().optional(),
   warnings: z.array(z.string()).default([])

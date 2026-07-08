@@ -4,7 +4,9 @@ import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { posix } from "node:path";
 import type { WriteFileActionSchema, WriteFileInput, WriteFileResult, WriteGroupedEditChange } from "../contracts/write.contract.js";
 import { RepoReaderError } from "../runtime/errors.js";
+import { invalidateRepoCaches } from "../runtime/repo-cache.js";
 import { normalizeRepoPath } from "./ignore-engine.js";
+import { invalidateFileClassification } from "./file-classifier.js";
 import { PathSandbox, validateRepoPath } from "./path-sandbox.js";
 import { SecretScanner } from "./secret-scanner.js";
 import { WritePolicy } from "./write-policy.js";
@@ -173,6 +175,8 @@ export class FileWriter {
       await this.ensureParentDirectory(prepared.result.path, true, true);
     }
     await atomicWriteFile(prepared.absolutePath, prepared.nextContent);
+    invalidateFileClassification(prepared.absolutePath);
+    invalidateRepoCaches(this.root);
     return prepared.result;
   }
 

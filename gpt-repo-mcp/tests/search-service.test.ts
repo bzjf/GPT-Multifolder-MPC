@@ -12,6 +12,7 @@ describe("SearchService", () => {
     });
 
     expect(result.returned_count).toBe(1);
+    expect(result.scan_complete).toBe(true);
     expect(result.results[0]).toMatchObject({
       path: "src/app.ts",
       line: 2,
@@ -67,6 +68,8 @@ describe("SearchService", () => {
     expect(first.results.map((match) => match.path)).toEqual(["src/admin.controller.ts", "src/app.ts"]);
     expect(first.truncated).toBe(true);
     expect(first.next_cursor).toBe("2");
+    expect(first.scan_complete).toBe(false);
+    expect(first.warnings).toContain("MATCH_COUNT_LOWER_BOUND");
 
     const second = await service.search({
       query: "export",
@@ -78,6 +81,16 @@ describe("SearchService", () => {
     expect(second.results.map((match) => match.path)).toEqual(["src/controllers.ts", "src/controllers.ts"]);
     expect(second.truncated).toBe(true);
     expect(second.next_cursor).toBe("4");
+    expect(second.scan_complete).toBe(false);
+  });
+
+  test("rejects an invalid cursor", async () => {
+    const fixture = await createRepoFixture();
+    const service = new SearchService(fixture.root, new PathSandbox(fixture.root));
+
+    await expect(service.search({ query: "export", cursor: "not-a-number" })).rejects.toMatchObject({
+      code: "VALIDATION_ERROR"
+    });
   });
 
   test("rejects invalid regex with a stable policy error", async () => {

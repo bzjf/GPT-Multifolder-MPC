@@ -6,7 +6,17 @@ import type { RuntimeContext } from "./runtime/context.js";
 
 export { SERVER_INSTRUCTIONS };
 
-export function createMcpServer(context: RuntimeContext): McpServer {
+export type McpServerOptions = {
+  exposeCompatibilityAliases?: boolean;
+};
+
+const COMPATIBILITY_ALIASES = new Set([
+  "repo_git_stage",
+  "repo_git_unstage",
+  "repo_git_commit"
+]);
+
+export function createMcpServer(context: RuntimeContext, options: McpServerOptions = {}): McpServer {
   const server = new McpServer(
     {
       name: "gpt-repo-mcp",
@@ -20,7 +30,10 @@ export function createMcpServer(context: RuntimeContext): McpServer {
     }
   );
 
+  const exposeCompatibilityAliases = options.exposeCompatibilityAliases
+    ?? process.env.GPT_REPO_EXPOSE_COMPAT_ALIASES === "true";
   for (const tool of toolCatalog) {
+    if (!exposeCompatibilityAliases && COMPATIBILITY_ALIASES.has(tool.name)) continue;
     registerCatalogTool(server, context, tool);
   }
 

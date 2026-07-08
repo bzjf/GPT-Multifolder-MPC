@@ -20,13 +20,11 @@ describe("repo_read_many", () => {
     const result = await readManyHandler({ repo_id: "fixture" }, context);
 
     expect(result.isError).toBe(true);
-    expect(result.structuredContent).toEqual({
-      ok: false,
-      error: {
-        code: "VALIDATION_ERROR",
-        message: "repo_read_many requires paths or include_globs.",
-        retryable: false
-      }
+    expect(result.structuredContent).toBeUndefined();
+    expect(result._meta?.error).toEqual({
+      code: "VALIDATION_ERROR",
+      message: "repo_read_many requires paths or include_globs.",
+      retryable: false
     });
   });
 
@@ -40,8 +38,9 @@ describe("repo_read_many", () => {
     }, context);
 
     expect(result.isError).toBe(true);
-    expect(result.structuredContent).toMatchObject({
-      error: { code: "VALIDATION_ERROR" }
+    expect(result.structuredContent).toBeUndefined();
+    expect(result._meta?.error).toMatchObject({
+      code: "VALIDATION_ERROR"
     });
   });
 

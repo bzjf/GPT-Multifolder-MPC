@@ -10,9 +10,9 @@ export const descriptions = {
   codex_read_skill:
     "Use this when the user asks to read a local Codex skill by name. Accepts a skill name and optional source only; does not accept arbitrary filesystem paths.",
   repo_tree:
-    "Use this when the user asks to inspect repository structure or locate likely files by directory. Do not use this when the user asks to read file contents.",
+    "Use this when the user asks to inspect repository structure or locate likely files by directory. Uses bounded lexicographic pagination and stops scanning after the requested page; excluded_summary is partial while scan_complete is false. Do not use this when the user asks to read file contents.",
   repo_search:
-    "Use this when the user asks to find code, inspect usages, perform a bughunt, or locate relevant files before reading them. Prefer this before repo_read_many.",
+    "Use this when the user asks to find code, inspect usages, perform a bughunt, or locate relevant files before reading them. Uses a bounded ripgrep fast path when available and a safe TypeScript fallback; matched_count is a lower bound when scan_complete is false. Prefer this before repo_read_many.",
   repo_fetch_file:
     "Use this when the user names a specific text file or after repo_tree/repo_search identifies one. Supports line ranges, byte offsets, and cursor pagination for large UTF-8 files while keeping each response bounded. Do not use for broad repository review.",
   repo_fetch_image:
@@ -24,7 +24,7 @@ export const descriptions = {
   repo_git_diff:
     "Use this when the user asks to review changes or inspect a git diff. Default first call should pass only repo_id. Do not include staged, unstaged, paths, max_bytes, or context_lines on the first pass. Use optional filters only after the default diff is truncated, too broad, or the user asks for a specific comparison.",
   repo_git_review:
-    "Use this when the user asks to review current git changes, recover bad write-tool edits, clean up generated artifacts, prepare staging, or plan a local commit without mutating anything. Workflow hub that returns status, diff summary, warnings, and ready-to-run composite payloads for repo_write_stage_commit and repo_write_recover plus low-level fallback payloads.",
+    "Use this when the user asks to review current git changes, recover bad write-tool edits, clean up generated artifacts, prepare staging, or plan a local commit without mutating anything. Default review mode returns compact status, diff summary, and guidance; use commit_plan only when exact stage, commit, or recovery payloads are needed.",
   repo_git_stage:
     "Use this when compatibility with the git-prefixed staging alias is needed; prefer repo_write_stage for ChatGPT workflows. Stages explicit repo-relative paths only, requires user approval and expected HEAD, and never runs shell commands.",
   repo_git_unstage:

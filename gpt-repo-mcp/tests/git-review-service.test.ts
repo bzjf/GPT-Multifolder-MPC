@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import { describe, expect, test } from "vitest";
 import { CleanupService } from "../src/services/cleanup-service.js";
 import { GitOperationsService } from "../src/services/git-operations-service.js";
+import { GitService } from "../src/services/git-service.js";
 import { GitReviewService } from "../src/services/git-review-service.js";
 import { OperationsPolicy } from "../src/services/operations-policy.js";
 
@@ -29,11 +30,88 @@ describe("GitReviewService", () => {
     expect(result.next_tool_payloads).toEqual({});
   });
 
-  test("modified tracked files produce explicit recommended paths and composite payloads", async () => {
+  test("clean review uses only the status command and skips both diffs", async () => {
+    const calls: string[][] = [];
+    const head = "a".repeat(40);
+    const git = new GitService("unused", async (args) => {
+      calls.push(args);
+      if (args.includes("status")) {
+        return `# branch.oid ${head}\n# branch.head main\n`;
+      }
+      throw new Error(`Unexpected Git command: ${args.join(" ")}`);
+    });
+
+    const result = await new GitReviewService("unused", new OperationsPolicy(), git).review({ repo_id: "fixture" });
+
+    expect(result.clean).toBe(true);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toContain("status");
+  });
+
+  test("compact review caps summaries and skips an absent staged diff", async () => {
+    const calls: string[][] = [];
+    const head = "c".repeat(40);
+    const statusLines = Array.from({ length: 60 }, (_, index) =>
+      `1 .M N... 100644 100644 100644 ${"1".repeat(40)} ${"1".repeat(40)} docs/file-${index}.md`
+    );
+    const diff = Array.from({ length: 60 }, (_, index) => [
+      `diff --git a/docs/file-${index}.md b/docs/file-${index}.md`,
+      `--- a/docs/file-${index}.md`,
+      `+++ b/docs/file-${index}.md`,
+      "@@ -1 +1 @@",
+      "-old",
+      "+new"
+    ].join("\n")).join("\n");
+    const git = new GitService("unused", async (args) => {
+      calls.push(args);
+      if (args.includes("status")) {
+        return [`# branch.oid ${head}`, "# branch.head main", ...statusLines, ""].join("\n");
+      }
+      if (args[0] === "diff" && !args.includes("--cached")) return diff;
+      throw new Error(`Unexpected Git command: ${args.join(" ")}`);
+    });
+
+    const result = await new GitReviewService("unused", new OperationsPolicy(), git).review({ repo_id: "fixture" });
+
+    expect(calls).toHaveLength(2);
+    expect(calls.some((args) => args.includes("--cached"))).toBe(false);
+    expect(result.diff_summary.file_count).toBe(60);
+    expect(result.diff_summary.files).toHaveLength(50);
+    expect(result.diff_summary.truncated).toBe(true);
+    expect(result.recommendation.warnings).toContain("DIFF_SUMMARY_TRUNCATED");
+  });
+
+  test("default review omits duplicated action payloads", async () => {
     const fixture = await createGitFixture();
     await writeFile(join(fixture.root, "docs", "a.md"), "A changed\n");
 
     const result = await new GitReviewService(fixture.root).review({ repo_id: "fixture" });
+
+    expect(result.clean).toBe(false);
+    expect(result.recommendation.recommended_stage_paths).toEqual(["docs/a.md"]);
+    expect(result.next_tool_payloads).toEqual({});
+  });
+
+  test("internal workflows can default reviews to commit_plan", async () => {
+    const fixture = await createGitFixture();
+    await writeFile(join(fixture.root, "docs", "a.md"), "A changed\n");
+
+    const result = await new GitReviewService(
+      fixture.root,
+      new OperationsPolicy(),
+      undefined,
+      "commit_plan"
+    ).review({ repo_id: "fixture" });
+
+    expect(result.next_tool_payloads.repo_write_stage_commit_dry_run).toBeDefined();
+    expect(result.next_tool_payloads.repo_write_recover_dry_run).toBeDefined();
+  });
+
+  test("modified tracked files produce explicit recommended paths and composite payloads", async () => {
+    const fixture = await createGitFixture();
+    await writeFile(join(fixture.root, "docs", "a.md"), "A changed\n");
+
+    const result = await new GitReviewService(fixture.root).review({ repo_id: "fixture", mode: "commit_plan" });
 
     expect(result.clean).toBe(false);
     expect(result.head_sha).toBe(fixture.head);
@@ -298,7 +376,7 @@ describe("GitReviewService", () => {
     await mkdir(join(fixture.root, "coverage"), { recursive: true });
     await writeFile(join(fixture.root, "coverage", "report.txt"), "coverage\n");
 
-    const result = await new GitReviewService(fixture.root, createCleanupPolicy()).review({ repo_id: "fixture" });
+    const result = await new GitReviewService(fixture.root, createCleanupPolicy()).review({ repo_id: "fixture", mode: "commit_plan" });
 
     expect(result.changed_paths).toEqual([
       expect.objectContaining({
@@ -352,7 +430,7 @@ describe("GitReviewService", () => {
     await mkdir(join(fixture.root, ".chatgpt", "codex-runs", "2026-06-04T081500Z-fix-login-expiry"), { recursive: true });
     await writeFile(join(fixture.root, resultPath), "# CODEX_RESULT\nstatus: completed\nsummary: local only\n");
 
-    const result = await new GitReviewService(fixture.root, createCleanupPolicy()).review({ repo_id: "fixture" });
+    const result = await new GitReviewService(fixture.root, createCleanupPolicy()).review({ repo_id: "fixture", mode: "commit_plan" });
 
     expect(result.recommendation.excluded_paths).toContainEqual({
       path: resultPath,
@@ -390,7 +468,7 @@ describe("GitReviewService", () => {
     await git(fixture.root, ["rm", "--", "docs/a.md"]);
     await git(fixture.root, ["restore", "--staged", "--", "docs/a.md"]);
 
-    const result = await new GitReviewService(fixture.root).review({ repo_id: "fixture" });
+    const result = await new GitReviewService(fixture.root).review({ repo_id: "fixture", mode: "commit_plan" });
 
     expect(result.recommendation.recommended_stage_paths).toEqual([]);
     expect(result.recommendation.excluded_paths).toEqual([

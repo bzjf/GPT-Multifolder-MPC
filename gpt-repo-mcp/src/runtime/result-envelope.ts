@@ -13,8 +13,9 @@ export type SuccessEnvelope<T> = {
 
 export type ErrorEnvelope = {
   isError: true;
-  structuredContent: {
-    ok: false;
+  structuredContent?: undefined;
+  content: ToolContent[];
+  _meta: {
     error: {
       code: string;
       message: string;
@@ -22,7 +23,6 @@ export type ErrorEnvelope = {
       diagnostics?: Record<string, unknown>;
     };
   };
-  content: ToolContent[];
 };
 
 export function redactSensitiveText(value: string): string {
@@ -61,8 +61,8 @@ export function createErrorEnvelope(error: RepoReaderError | Error | {
   const diagnostics = sanitizeDiagnostics(normalized.diagnostics);
   return {
     isError: true,
-    structuredContent: {
-      ok: false,
+    content: [{ type: "text", text: `${normalized.code}: ${message}` }],
+    _meta: {
       error: {
         code: normalized.code,
         message,
@@ -71,8 +71,7 @@ export function createErrorEnvelope(error: RepoReaderError | Error | {
           ? { diagnostics }
           : {})
       }
-    },
-    content: [{ type: "text", text: `${normalized.code}: ${message}` }]
+    }
   } as ErrorEnvelope & CallToolResult;
 }
 

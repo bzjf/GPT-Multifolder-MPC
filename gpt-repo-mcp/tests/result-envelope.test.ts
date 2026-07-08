@@ -19,8 +19,9 @@ describe("result envelope", () => {
     });
 
     expect(result.isError).toBe(true);
-    expect(result.structuredContent.error.message).not.toContain("/Users/example");
-    expect(result.structuredContent.error.message).not.toContain("sk-secret");
+    expect(result.structuredContent).toBeUndefined();
+    expect(result._meta.error.message).not.toContain("/Users/example");
+    expect(result._meta.error.message).not.toContain("sk-secret");
   });
 
   test("exposes only safe allowlisted diagnostics in errors", () => {
@@ -36,7 +37,8 @@ describe("result envelope", () => {
       }
     }));
 
-    expect(result.structuredContent.error.diagnostics).toEqual({
+    expect(result.structuredContent).toBeUndefined();
+    expect(result._meta.error.diagnostics).toEqual({
       applied_paths: ["src/a.ts"],
       failed_path: "src/c.ts",
       recovery_hint: "Run repo_git_review, then use repo_git_restore_paths for tracked applied paths or repo_cleanup_paths for generated untracked artifacts."

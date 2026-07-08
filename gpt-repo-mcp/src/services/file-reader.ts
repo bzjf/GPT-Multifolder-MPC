@@ -83,7 +83,7 @@ export class FileReader {
       throw new RepoReaderError("SECRET_CANDIDATE_BLOCKED", `Sensitive path blocked: ${resolved.repoPath}`);
     }
 
-    const classification = await this.classifier.classify(resolved.repoPath, resolved.absolutePath);
+    const classification = await this.classifier.classify(resolved.repoPath, resolved.absolutePath, resolved.stat);
     if (classification.is_binary) {
       throw new RepoReaderError("BINARY_FILE_REJECTED", `Binary file blocked: ${resolved.repoPath}`);
     }

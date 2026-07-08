@@ -2,8 +2,8 @@ import { z } from "zod";
 import { RepoInputSchema } from "./repo.contract.js";
 
 export const GitReviewInputSchema = RepoInputSchema.extend({
-  mode: z.enum(["review", "commit_plan"]).optional().describe("Optional review mode. Use review for normal change review and commit_plan when preparing exact stage and commit payloads."),
-  max_files: z.number().int().positive().optional().describe("Maximum number of diff summary files to include before marking the summary truncated.")
+  mode: z.enum(["review", "commit_plan"]).optional().describe("Optional review mode. The default review mode returns compact status and diff guidance; use commit_plan only when exact stage, commit, or recovery payloads are needed."),
+  max_files: z.number().int().positive().optional().describe("Maximum number of diff summary files to include before marking the summary truncated. Compact review mode defaults to 50; commit_plan defaults to the full diff.")
 });
 
 const ChangedPathSchema = z.object({

@@ -30,6 +30,7 @@ import { createErrorEnvelope, createSuccessEnvelope } from "../runtime/result-en
 import { toRepoReaderError } from "../runtime/errors.js";
 import { audit } from "../runtime/telemetry.js";
 import type { RuntimeContext } from "../runtime/context.js";
+import { invalidateRepoCaches } from "../runtime/repo-cache.js";
 import type { SearchOptions } from "../services/search-service.js";
 import type { FetchFileOptions } from "../services/file-reader.js";
 import type { TreeOptions } from "../services/repo-tree-service.js";
@@ -119,8 +120,8 @@ export const searchHandler: ToolHandler = async (input, context) => safeTool<Sea
   const repo = context.registry.get(args.repo_id);
   const sandbox = new PathSandbox(repo.root);
   const result = await new SearchService(repo.root, sandbox).search(args);
-  audit({ tool: "repo_search", repo_id: args.repo_id, counts: { results: result.returned_count }, truncated: result.truncated });
-  return createSuccessEnvelope(result, `Returned ${result.returned_count} search results.`);
+  audit({ tool: "repo_search", repo_id: args.repo_id, counts: { results: result.returned_count }, truncated: result.truncated, warnings: result.warnings });
+  return createSuccessEnvelope(result, `Returned ${result.returned_count} search results.`, { warnings: result.warnings });
 });
 
 export const fetchFileHandler: ToolHandler = async (input, context) => safeTool<FetchFileOptions & RepoInput>("repo_fetch_file", input, context, async (args) => {
@@ -215,6 +216,7 @@ async function gitUnstage(tool: "repo_git_unstage" | "repo_write_unstage", args:
 export const gitRestorePathsHandler: ToolHandler = async (input, context) => safeTool<GitRestorePathsInput>("repo_git_restore_paths", input, context, async (args) => {
   const repo = context.registry.get(args.repo_id);
   const result = await new GitOperationsService(repo.root, new OperationsPolicy(repo.operations)).restorePaths(args);
+  if (!result.dry_run && result.restored_paths.length > 0) invalidateRepoCaches(repo.root);
   audit({ tool: "repo_git_restore_paths", repo_id: args.repo_id, paths: result.restored_paths, warnings: result.warnings });
   return createSuccessEnvelope(result, result.dry_run ? `Dry run checked restoring ${result.restored_paths.length} paths.` : `Restored ${result.restored_paths.length} paths.`);
 });
@@ -237,6 +239,7 @@ export const writeStageCommitHandler: ToolHandler = async (input, context) => sa
 export const writeRecoverHandler: ToolHandler = async (input, context) => safeTool<GitRecoverInput>("repo_write_recover", input, context, async (args) => {
   const repo = context.registry.get(args.repo_id);
   const result = await new GitOperationsService(repo.root, new OperationsPolicy(repo.operations)).recover(args);
+  if (!result.dry_run && (result.restored_paths.length > 0 || result.deleted.length > 0)) invalidateRepoCaches(repo.root);
   audit({
     tool: "repo_write_recover",
     repo_id: args.repo_id,
@@ -339,7 +342,7 @@ export const codexReviewHandler: ToolHandler = async (input, context) => safeToo
   const repo = context.registry.get(args.repo_id);
   const result = await new CodexResultService(
     new PathSandbox(repo.root),
-    new GitReviewService(repo.root, new OperationsPolicy(repo.operations))
+    new GitReviewService(repo.root, new OperationsPolicy(repo.operations), undefined, "commit_plan")
   ).review(args);
   audit({
     tool: "repo_codex_review",

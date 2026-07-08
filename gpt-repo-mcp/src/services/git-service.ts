@@ -6,30 +6,40 @@ import { validateRepoPath } from "./path-sandbox.js";
 
 const execFileAsync = promisify(execFile);
 
+export type GitCommandRunner = (args: string[], maxBuffer?: number) => Promise<string>;
+
 export class GitService {
-  constructor(private readonly root: string) {}
+  private readonly runCommand: GitCommandRunner;
+
+  constructor(private readonly root: string, runCommand?: GitCommandRunner) {
+    this.runCommand = runCommand ?? ((args, maxBuffer) => this.runGitProcess(args, maxBuffer));
+  }
 
   async headSha(): Promise<string> {
-    return (await this.git(["rev-parse", "HEAD"])).trim();
+    return (await this.runCommand(["rev-parse", "HEAD"])).trim();
   }
 
   async status() {
-    const [branch, headSha, porcelain] = await Promise.all([
-      this.git(["rev-parse", "--abbrev-ref", "HEAD"]),
-      this.headSha(),
-      this.git(["status", "--porcelain=v1", "--untracked-files=all"])
+    const raw = await this.runCommand([
+      "-c",
+      "core.quotePath=false",
+      "status",
+      "--porcelain=v2",
+      "--branch",
+      "--untracked-files=all",
+      "--renames"
     ]);
-    const files = porcelain.split("\n").filter(Boolean).map(parseStatusLine);
+    const parsed = parsePorcelainV2Status(raw);
     const counts: Record<string, number> = {};
-    for (const file of files) {
+    for (const file of parsed.files) {
       const key = `${file.index}${file.worktree}`.trim() || "clean";
       counts[key] = (counts[key] ?? 0) + 1;
     }
     return {
-      branch: branch.trim(),
-      head_sha: headSha,
-      clean: files.length === 0,
-      files,
+      branch: parsed.branch,
+      head_sha: parsed.headSha,
+      clean: parsed.files.length === 0,
+      files: parsed.files,
       counts
     };
   }
@@ -45,19 +55,16 @@ export class GitService {
   }) {
     const paths = options.paths?.map(validateRepoPath);
     const args = ["diff", "--find-renames", `--unified=${options.context_lines ?? 3}`];
-    if (options.staged) {
-      args.push("--cached");
-    }
+    if (options.staged) args.push("--cached");
     if (options.base && options.compare) {
       args.push(`${options.base}...${options.compare}`);
     } else if (options.base) {
       args.push(options.base);
     }
-    if (paths?.length) {
-      args.push("--", ...paths);
-    }
+    if (paths?.length) args.push("--", ...paths);
+
     const maxBytes = Math.min(options.max_bytes ?? DEFAULT_LIMITS.max_diff_bytes, DEFAULT_LIMITS.max_diff_bytes);
-    const raw = await this.git(args, DEFAULT_LIMITS.max_diff_bytes + 1);
+    const raw = await this.runCommand(args, DEFAULT_LIMITS.max_diff_bytes + 1);
     const truncated = Buffer.byteLength(raw) > maxBytes;
     const text = truncated ? raw.slice(0, maxBytes) : raw;
     return {
@@ -73,7 +80,7 @@ export class GitService {
     };
   }
 
-  private async git(args: string[], maxBuffer: number = DEFAULT_LIMITS.max_diff_bytes): Promise<string> {
+  private async runGitProcess(args: string[], maxBuffer: number = DEFAULT_LIMITS.max_diff_bytes): Promise<string> {
     try {
       const result = await execFileAsync("git", args, {
         cwd: this.root,
@@ -102,15 +109,90 @@ type DiffFile = {
   hunks: string[];
 };
 
-function parseStatusLine(line: string): StatusFile {
-  const index = line.slice(0, 1);
-  const worktree = line.slice(1, 2);
-  const rawPath = line.slice(3);
-  if (index === "R" || index === "C") {
-    const [originalPath, path] = rawPath.split(" -> ");
-    return { index, worktree, path: path ?? rawPath, original_path: originalPath };
+function parsePorcelainV2Status(raw: string): {
+  branch: string;
+  headSha: string;
+  files: StatusFile[];
+} {
+  let branch = "HEAD";
+  let headSha = "";
+  const files: StatusFile[] = [];
+
+  for (const line of raw.split(/\r?\n/)) {
+    if (!line) continue;
+    if (line.startsWith("# branch.oid ")) {
+      headSha = line.slice("# branch.oid ".length).trim();
+      continue;
+    }
+    if (line.startsWith("# branch.head ")) {
+      const value = line.slice("# branch.head ".length).trim();
+      branch = value === "(detached)" ? "HEAD" : value;
+      continue;
+    }
+    const parsed = parsePorcelainV2File(line);
+    if (parsed) files.push(parsed);
   }
-  return { index, worktree, path: rawPath };
+
+  if (!headSha || headSha === "(initial)") {
+    throw new RepoReaderError("GIT_ERROR", "Git repository does not have a readable HEAD commit.");
+  }
+  return { branch, headSha, files };
+}
+
+function parsePorcelainV2File(line: string): StatusFile | undefined {
+  if (line.startsWith("? ")) {
+    return { index: "?", worktree: "?", path: unquoteGitPath(line.slice(2)) };
+  }
+  if (line.startsWith("! ")) return undefined;
+
+  const fields = line.split(" ");
+  const recordType = fields[0];
+  const xy = fields[1];
+  if (!xy || xy.length !== 2) return undefined;
+
+  if (recordType === "1") {
+    return {
+      index: normalizeStatusChar(xy[0]),
+      worktree: normalizeStatusChar(xy[1]),
+      path: unquoteGitPath(fields.slice(8).join(" "))
+    };
+  }
+
+  if (recordType === "2") {
+    const pathData = fields.slice(9).join(" ");
+    const separator = pathData.indexOf("\t");
+    const path = separator >= 0 ? pathData.slice(0, separator) : pathData;
+    const originalPath = separator >= 0 ? pathData.slice(separator + 1) : undefined;
+    return {
+      index: normalizeStatusChar(xy[0]),
+      worktree: normalizeStatusChar(xy[1]),
+      path: unquoteGitPath(path),
+      ...(originalPath ? { original_path: unquoteGitPath(originalPath) } : {})
+    };
+  }
+
+  if (recordType === "u") {
+    return {
+      index: normalizeStatusChar(xy[0]),
+      worktree: normalizeStatusChar(xy[1]),
+      path: unquoteGitPath(fields.slice(10).join(" "))
+    };
+  }
+
+  return undefined;
+}
+
+function normalizeStatusChar(value: string | undefined): string {
+  return !value || value === "." ? " " : value;
+}
+
+function unquoteGitPath(value: string): string {
+  if (!(value.startsWith('"') && value.endsWith('"'))) return value;
+  try {
+    return JSON.parse(value) as string;
+  } catch {
+    return value.slice(1, -1);
+  }
 }
 
 function parseDiff(diff: string) {
@@ -129,9 +211,7 @@ function parseDiff(diff: string) {
       currentHunk = [];
       continue;
     }
-    if (!current) {
-      continue;
-    }
+    if (!current) continue;
     if (line.startsWith("rename from ")) {
       current.original_path = line.slice("rename from ".length);
       current.status = "renamed";
@@ -156,9 +236,7 @@ function parseDiff(diff: string) {
       currentHunk = [line];
       continue;
     }
-    if (currentHunk.length) {
-      currentHunk.push(line);
-    }
+    if (currentHunk.length) currentHunk.push(line);
   }
   if (current) {
     if (currentHunk.length) current.hunks.push(currentHunk.join("\n"));

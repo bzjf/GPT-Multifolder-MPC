@@ -856,7 +856,7 @@ describe("tool catalog contracts", () => {
             "openWorldHint": false,
             "readOnlyHint": true,
           },
-          "description": "Use this when the user asks to inspect repository structure or locate likely files by directory. Do not use this when the user asks to read file contents.",
+          "description": "Use this when the user asks to inspect repository structure or locate likely files by directory. Uses bounded lexicographic pagination and stops scanning after the requested page; excluded_summary is partial while scan_complete is false. Do not use this when the user asks to read file contents.",
           "inputKeys": [
             "cursor",
             "include_dependencies",
@@ -873,6 +873,7 @@ describe("tool catalog contracts", () => {
             "entries",
             "excluded_summary",
             "next_cursor",
+            "scan_complete",
             "truncated",
           ],
           "title": "Inspect repository tree",
@@ -884,7 +885,7 @@ describe("tool catalog contracts", () => {
             "openWorldHint": false,
             "readOnlyHint": true,
           },
-          "description": "Use this when the user asks to find code, inspect usages, perform a bughunt, or locate relevant files before reading them. Prefer this before repo_read_many.",
+          "description": "Use this when the user asks to find code, inspect usages, perform a bughunt, or locate relevant files before reading them. Uses a bounded ripgrep fast path when available and a safe TypeScript fallback; matched_count is a lower bound when scan_complete is false. Prefer this before repo_read_many.",
           "inputKeys": [
             "context_lines",
             "cursor",
@@ -901,6 +902,7 @@ describe("tool catalog contracts", () => {
             "next_cursor",
             "results",
             "returned_count",
+            "scan_complete",
             "truncated",
             "warnings",
           ],
@@ -1057,7 +1059,7 @@ describe("tool catalog contracts", () => {
             "openWorldHint": false,
             "readOnlyHint": true,
           },
-          "description": "Use this when the user asks to review current git changes, recover bad write-tool edits, clean up generated artifacts, prepare staging, or plan a local commit without mutating anything. Workflow hub that returns status, diff summary, warnings, and ready-to-run composite payloads for repo_write_stage_commit and repo_write_recover plus low-level fallback payloads.",
+          "description": "Use this when the user asks to review current git changes, recover bad write-tool edits, clean up generated artifacts, prepare staging, or plan a local commit without mutating anything. Default review mode returns compact status, diff summary, and guidance; use commit_plan only when exact stage, commit, or recovery payloads are needed.",
           "inputKeys": [
             "max_files",
             "mode",

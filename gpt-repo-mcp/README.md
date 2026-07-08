@@ -208,6 +208,16 @@ GPT Repo MCP is intentionally not a shell runner.
 
 Read the full model in [docs/SECURITY.md](docs/SECURITY.md).
 
+## Performance behavior
+
+- `repo_git_status` reads branch, HEAD, and worktree state with one porcelain-v2 Git process.
+- `repo_git_review` uses compact `review` mode by default, omits duplicated action payloads, and caps the diff summary at 50 files. Use `mode: "commit_plan"` only when exact stage, commit, or recovery payloads are required.
+- `repo_tree` stops after collecting the requested page instead of materializing the entire repository tree. While `scan_complete` is `false`, `excluded_summary` covers only the scanned prefix.
+- `repo_search` uses `ripgrep` (`rg`) when it is installed and automatically falls back to the built-in TypeScript scanner otherwise. While `scan_complete` is `false`, `matched_count` is a lower bound.
+- Short-lived directory and file-classification caches reduce repeated filesystem work and are invalidated by MCP write, cleanup, restore, and recovery operations.
+
+The HTTP runtime hides the legacy `repo_git_stage`, `repo_git_unstage`, and `repo_git_commit` aliases by default. The preferred `repo_write_*` tools remain available. Set `GPT_REPO_EXPOSE_COMPAT_ALIASES=true` for an older runtime client, or pass `{ exposeCompatibilityAliases: true }` to `createMcpServer` from library code.
+
 ## Common Commands
 
 | Command | Purpose |

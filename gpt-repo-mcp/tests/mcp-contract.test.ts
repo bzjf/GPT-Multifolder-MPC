@@ -21,20 +21,22 @@ describe("MCP contract", () => {
       expect(client.getServerVersion()).toMatchObject({ name: "gpt-repo-mcp", version: "0.1.0" });
       expect(client.getServerCapabilities()).toMatchObject({ tools: {} });
       expect(client.getInstructions()).toBe(SERVER_INSTRUCTIONS);
-      expect(SERVER_INSTRUCTIONS).not.toContain("read-only repository app");
-      expect(SERVER_INSTRUCTIONS).toContain("Mutating tools are disabled by default and require repo-local config opt-in");
-      expect(SERVER_INSTRUCTIONS).toContain("Prefer the repo_write_* names for ChatGPT workflows");
-      expect(SERVER_INSTRUCTIONS).toContain("repo_write_commit, repo_write_stage_commit, and repo_git_commit create local commits only");
-      expect(SERVER_INSTRUCTIONS).toContain("repo_git_review is the workflow hub");
-      expect(SERVER_INSTRUCTIONS).toContain("prefer composite workflow tools");
-      expect(SERVER_INSTRUCTIONS).toContain("repo_write_stage_commit for reviewed happy-path local commits");
-      expect(SERVER_INSTRUCTIONS).toContain("repo_write_recover for reviewed recovery");
-      expect(SERVER_INSTRUCTIONS).toContain("Dry-run is optional preview");
-      expect(SERVER_INSTRUCTIONS).toContain("Omit optional reason by default");
+      expect(SERVER_INSTRUCTIONS.length).toBeLessThan(6000);
+      expect(SERVER_INSTRUCTIONS).toContain("approved local repositories");
+      expect(SERVER_INSTRUCTIONS).toContain("smallest number of bounded tool calls");
+      expect(SERVER_INSTRUCTIONS).toContain("Reuse results already obtained");
+      expect(SERVER_INSTRUCTIONS).toContain("Do not call repo_list_roots when a valid repo_id is already known");
+      expect(SERVER_INSTRUCTIONS).toContain("codex_list_skills only when a relevant skill is likely to exist");
+      expect(SERVER_INSTRUCTIONS).toContain("Use one repo_write_changes call for a cohesive multi-file task");
+      expect(SERVER_INSTRUCTIONS).toContain("group multiple same-file edits into one ordered grouped edit");
+      expect(SERVER_INSTRUCTIONS).toContain("prefer one repo_git_review call instead of separate status and diff calls");
+      expect(SERVER_INSTRUCTIONS).toContain("mode=commit_plan");
+      expect(SERVER_INSTRUCTIONS).toContain("prefer repo_write_stage_commit");
+      expect(SERVER_INSTRUCTIONS).toContain("prefer repo_write_recover");
+      expect(SERVER_INSTRUCTIONS).toContain("Never push, pull, reset, checkout");
+      expect(SERVER_INSTRUCTIONS).toContain("execute shell commands");
+      expect(SERVER_INSTRUCTIONS).toContain("repo_policy_explain only when access is blocked");
       expect(SERVER_INSTRUCTIONS).toContain("repo_last_write");
-      expect(SERVER_INSTRUCTIONS).not.toContain("dry-run first when possible");
-      expect(SERVER_INSTRUCTIONS).toContain("do not push");
-      expect(SERVER_INSTRUCTIONS).toContain("do not run shell commands");
     } finally {
       await close();
     }
@@ -57,6 +59,21 @@ describe("MCP contract", () => {
           expect(tool.annotations).toMatchObject(readOnlyAnnotations);
         }
       }
+    } finally {
+      await close();
+    }
+  });
+
+  test("default server surface hides legacy git aliases", async () => {
+    const { client, close } = await connectFixtureServer({ exposeCompatibilityAliases: false });
+    try {
+      const names = (await client.listTools()).tools.map((tool) => tool.name);
+      expect(names).not.toContain("repo_git_stage");
+      expect(names).not.toContain("repo_git_unstage");
+      expect(names).not.toContain("repo_git_commit");
+      expect(names).toContain("repo_write_stage");
+      expect(names).toContain("repo_write_unstage");
+      expect(names).toContain("repo_write_commit");
     } finally {
       await close();
     }
@@ -194,7 +211,7 @@ describe("MCP contract", () => {
               "openWorldHint": false,
               "readOnlyHint": true,
             },
-            "description": "Use this when the user asks to inspect repository structure or locate likely files by directory. Do not use this when the user asks to read file contents.",
+            "description": "Use this when the user asks to inspect repository structure or locate likely files by directory. Uses bounded lexicographic pagination and stops scanning after the requested page; excluded_summary is partial while scan_complete is false. Do not use this when the user asks to read file contents.",
             "inputKeys": [
               "cursor",
               "include_dependencies",
@@ -211,6 +228,7 @@ describe("MCP contract", () => {
               "entries",
               "excluded_summary",
               "next_cursor",
+              "scan_complete",
               "truncated",
             ],
             "title": "Inspect repository tree",
@@ -222,7 +240,7 @@ describe("MCP contract", () => {
               "openWorldHint": false,
               "readOnlyHint": true,
             },
-            "description": "Use this when the user asks to find code, inspect usages, perform a bughunt, or locate relevant files before reading them. Prefer this before repo_read_many.",
+            "description": "Use this when the user asks to find code, inspect usages, perform a bughunt, or locate relevant files before reading them. Uses a bounded ripgrep fast path when available and a safe TypeScript fallback; matched_count is a lower bound when scan_complete is false. Prefer this before repo_read_many.",
             "inputKeys": [
               "context_lines",
               "cursor",
@@ -239,6 +257,7 @@ describe("MCP contract", () => {
               "next_cursor",
               "results",
               "returned_count",
+              "scan_complete",
               "truncated",
               "warnings",
             ],
@@ -395,7 +414,7 @@ describe("MCP contract", () => {
               "openWorldHint": false,
               "readOnlyHint": true,
             },
-            "description": "Use this when the user asks to review current git changes, recover bad write-tool edits, clean up generated artifacts, prepare staging, or plan a local commit without mutating anything. Workflow hub that returns status, diff summary, warnings, and ready-to-run composite payloads for repo_write_stage_commit and repo_write_recover plus low-level fallback payloads.",
+            "description": "Use this when the user asks to review current git changes, recover bad write-tool edits, clean up generated artifacts, prepare staging, or plan a local commit without mutating anything. Default review mode returns compact status, diff summary, and guidance; use commit_plan only when exact stage, commit, or recovery payloads are needed.",
             "inputKeys": [
               "max_files",
               "mode",
@@ -1095,14 +1114,12 @@ describe("MCP contract", () => {
       });
 
       expect(result.isError).toBe(true);
-      expect(result.structuredContent).toMatchObject({
-        ok: false,
-        error: {
-          code: "WRITE_FIND_NOT_FOUND",
-          retryable: false
-        }
+      expect(result.structuredContent).toBeUndefined();
+      expect(result._meta?.error).toMatchObject({
+        code: "WRITE_FIND_NOT_FOUND",
+        retryable: false
       });
-      const serialized = JSON.stringify(result.structuredContent);
+      const serialized = JSON.stringify(result);
       expect(serialized).not.toContain("/Users/");
       expect(serialized).not.toContain("A\\n");
       expect(serialized).not.toContain("Applied\\n");
@@ -1398,7 +1415,7 @@ function representativeCalls(head: string): Record<string, Record<string, unknow
   };
 }
 
-async function connectFixtureServer() {
+async function connectFixtureServer(options: { exposeCompatibilityAliases?: boolean } = { exposeCompatibilityAliases: true }) {
   const root = await createRepoRoot();
   const head = (await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: root, env: { PATH: process.env.PATH ?? "" } })).stdout.trim();
   const registry = await RootRegistry.fromConfig({
@@ -1416,7 +1433,9 @@ async function connectFixtureServer() {
     }],
     limits: {}
   });
-  const server = createMcpServer({ registry });
+  const server = createMcpServer({ registry }, {
+    exposeCompatibilityAliases: options.exposeCompatibilityAliases ?? true
+  });
   const client = new Client({ name: "contract-test-client", version: "0.1.0" });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
 

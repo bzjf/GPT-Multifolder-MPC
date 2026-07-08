@@ -62,7 +62,7 @@ export class TaskInventoryService {
           break;
         }
         const resolved = await this.sandbox.resolve(entry.path);
-        const classification = await this.classifier.classify(entry.path, resolved.absolutePath);
+        const classification = await this.classifier.classify(entry.path, resolved.absolutePath, resolved.stat);
         if (classification.is_binary) {
           continue;
         }

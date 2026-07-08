@@ -7,6 +7,7 @@ import { OperationsPolicy } from "./operations-policy.js";
 type StatusFile = GitReviewResult["changed_paths"][number];
 
 const STAGED_RECOVERY_WARNING = "STAGED_RECOVERY_REQUIRES_UNSTAGE_FIRST";
+const DEFAULT_COMPACT_SUMMARY_FILES = 50;
 const STAGED_RECOVERY_GUIDANCE = [
   "Staged paths cannot be restored directly with repo_git_restore_paths because restore is worktree-only.",
   "For bad staged changes, use repo_write_recover with the review-provided unstage_paths and restore_paths, or use repo_write_unstage first when granular control is needed.",
@@ -18,15 +19,23 @@ export class GitReviewService {
 
   constructor(
     private readonly root: string,
-    private readonly operationsPolicy: OperationsPolicy = new OperationsPolicy()
+    private readonly operationsPolicy: OperationsPolicy = new OperationsPolicy(),
+    private readonly git: GitService = new GitService(root),
+    private readonly defaultMode: NonNullable<GitReviewInput["mode"]> = "review"
   ) {}
 
   async review(input: GitReviewInput): Promise<GitReviewResult> {
-    const git = new GitService(this.root);
-    const [status, unstagedDiff, stagedDiff] = await Promise.all([
-      git.status(),
-      git.diff({}),
-      git.diff({ staged: true })
+    const mode = input.mode ?? this.defaultMode;
+    const status = await this.git.status();
+    if (status.clean) {
+      return cleanReviewResult(status.branch, status.head_sha);
+    }
+
+    const hasStagedDiff = status.files.some((file) => file.index !== " " && file.index !== "?");
+    const hasUnstagedDiff = status.files.some((file) => file.worktree !== " " && file.worktree !== "?");
+    const [stagedDiff, unstagedDiff] = await Promise.all([
+      hasStagedDiff ? this.git.diff({ staged: true }) : Promise.resolve(emptyDiff({ staged: true })),
+      hasUnstagedDiff ? this.git.diff({}) : Promise.resolve(emptyDiff({ unstaged: true }))
     ]);
     const diff = mergeDiffs(stagedDiff, unstagedDiff);
     const changedPaths = status.files.map((file) => ({
@@ -36,14 +45,11 @@ export class GitReviewService {
       unstaged: file.worktree !== " " || file.index === "?"
     }));
 
-    const maxFiles = input.max_files ?? diff.files.length;
+    const maxFiles = input.max_files ?? (mode === "commit_plan" ? diff.files.length : DEFAULT_COMPACT_SUMMARY_FILES);
     const diffSummaryTruncated = diff.truncated || diff.files.length > maxFiles;
     const warnings = [...diff.warnings];
     if (diffSummaryTruncated) {
       warnings.push("DIFF_SUMMARY_TRUNCATED");
-    }
-    if (status.clean) {
-      warnings.push("NO_CHANGES");
     }
 
     const excludedPaths: Array<{ path: string; reason: string }> = [];
@@ -87,8 +93,9 @@ export class GitReviewService {
     const recoverRestorePaths = [...new Set([...recoverableWorktreePaths, ...stagedRecoveryPaths])].sort();
     const suggestedCommitMessage = suggestCommitMessage(expectedCommitPaths);
     const nextToolPayloads: GitReviewResult["next_tool_payloads"] = {};
+    const includeActionPayloads = mode === "commit_plan";
 
-    if (recoverableWorktreePaths.length > 0) {
+    if (includeActionPayloads && recoverableWorktreePaths.length > 0) {
       nextToolPayloads.repo_git_restore_paths_dry_run = {
         repo_id: input.repo_id,
         paths: recoverableWorktreePaths,
@@ -103,7 +110,7 @@ export class GitReviewService {
       };
     }
 
-    if (cleanupPaths.length > 0) {
+    if (includeActionPayloads && cleanupPaths.length > 0) {
       nextToolPayloads.repo_cleanup_paths_dry_run = {
         repo_id: input.repo_id,
         paths: cleanupPaths,
@@ -116,7 +123,7 @@ export class GitReviewService {
       };
     }
 
-    if (stagedPaths.length > 0) {
+    if (includeActionPayloads && stagedPaths.length > 0) {
       nextToolPayloads.repo_write_unstage_dry_run = {
         repo_id: input.repo_id,
         paths: stagedPaths,
@@ -131,7 +138,7 @@ export class GitReviewService {
       };
     }
 
-    if (stagedRecoveryPaths.length > 0 || recoverRestorePaths.length > 0 || cleanupPaths.length > 0) {
+    if (includeActionPayloads && (stagedRecoveryPaths.length > 0 || recoverRestorePaths.length > 0 || cleanupPaths.length > 0)) {
       nextToolPayloads.repo_write_recover_dry_run = {
         repo_id: input.repo_id,
         expected_head_sha: status.head_sha,
@@ -150,7 +157,7 @@ export class GitReviewService {
       };
     }
 
-    if (stagePaths.length > 0) {
+    if (includeActionPayloads && stagePaths.length > 0) {
       nextToolPayloads.repo_write_stage_dry_run = {
         repo_id: input.repo_id,
         paths: stagePaths,
@@ -181,7 +188,7 @@ export class GitReviewService {
       }
     }
 
-    if (expectedCommitPaths.length > 0) {
+    if (includeActionPayloads && expectedCommitPaths.length > 0) {
       nextToolPayloads.repo_write_commit_dry_run = {
         repo_id: input.repo_id,
         message: suggestedCommitMessage,
@@ -216,7 +223,7 @@ export class GitReviewService {
         warnings,
         ...(stagedRecoveryPaths.length > 0 ? { recovery_guidance: STAGED_RECOVERY_GUIDANCE } : {})
       },
-      next_tool_payloads: status.clean ? {} : nextToolPayloads
+      next_tool_payloads: nextToolPayloads
     };
   }
 
@@ -259,6 +266,38 @@ export class GitReviewService {
     }
     return !this.ignoreEngine.isSensitiveCandidate(path.path);
   }
+}
+
+function cleanReviewResult(branch: string, headSha: string): GitReviewResult {
+  return {
+    ok: true,
+    branch,
+    head_sha: headSha,
+    clean: true,
+    changed_paths: [],
+    diff_summary: { file_count: 0, truncated: false, files: [] },
+    recommendation: {
+      ready_to_stage: false,
+      recommended_stage_paths: [],
+      excluded_paths: [],
+      suggested_commit_message: "No changes to commit",
+      risk_level: "low",
+      warnings: ["NO_CHANGES"]
+    },
+    next_tool_payloads: {}
+  };
+}
+
+function emptyDiff(flags: { staged?: boolean; unstaged?: boolean }): GitDiff {
+  return {
+    base: undefined,
+    compare: undefined,
+    staged: flags.staged,
+    unstaged: flags.unstaged,
+    files: [],
+    truncated: false,
+    warnings: []
+  };
 }
 
 function classifyStatus(index: string, worktree: string): StatusFile["status"] {

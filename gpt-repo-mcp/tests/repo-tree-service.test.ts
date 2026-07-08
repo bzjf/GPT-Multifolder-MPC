@@ -3,6 +3,8 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { PathSandbox } from "../src/services/path-sandbox.js";
 import { RepoTreeService } from "../src/services/repo-tree-service.js";
+import { FileWriter } from "../src/services/file-writer.js";
+import { WritePolicy } from "../src/services/write-policy.js";
 import { createRepoFixture } from "./fixtures/repo-fixture.js";
 
 describe("RepoTreeService", () => {
@@ -15,6 +17,7 @@ describe("RepoTreeService", () => {
     expect(result.entries.some((entry) => "text" in entry)).toBe(false);
     expect(result.entries.some((entry) => entry.path.startsWith("node_modules/"))).toBe(false);
     expect(result.excluded_summary.default_excludes).toBeGreaterThan(0);
+    expect(result.scan_complete).toBe(true);
   });
 
   test("reports nested repos and submodules without recursing into them", async () => {
@@ -46,11 +49,13 @@ describe("RepoTreeService", () => {
     expect(first.entries.map((entry) => entry.path)).toEqual(["binary.bin", "docs", "docs/guide.md"]);
     expect(first.truncated).toBe(true);
     expect(first.next_cursor).toBe("3");
+    expect(first.scan_complete).toBe(false);
 
     const second = await service.tree({ include_files: true, page_size: 3, cursor: first.next_cursor });
     expect(second.entries.map((entry) => entry.path)).toEqual(["src", "src/admin.controller.ts", "src/app.ts"]);
     expect(second.truncated).toBe(true);
     expect(second.next_cursor).toBe("6");
+    expect(second.scan_complete).toBe(false);
   });
 
   test("respects include_generated and include_dependencies flags", async () => {
@@ -84,6 +89,24 @@ describe("RepoTreeService", () => {
     });
   });
 
+  test("invalidates a cached page immediately after an MCP file write", async () => {
+    const fixture = await createRepoFixture();
+    const sandbox = new PathSandbox(fixture.root);
+    const service = new RepoTreeService(fixture.root, sandbox);
+
+    const before = await service.tree({ path: "docs", include_files: true });
+    expect(before.entries.some((entry) => entry.path === "docs/cached-new.md")).toBe(false);
+
+    await new FileWriter(
+      fixture.root,
+      sandbox,
+      new WritePolicy({ enabled: true, allowed_globs: ["docs/**"] })
+    ).write({ path: "docs/cached-new.md", content: "new\n", create_dirs: true });
+
+    const after = await service.tree({ path: "docs", include_files: true });
+    expect(after.entries.some((entry) => entry.path === "docs/cached-new.md")).toBe(true);
+  });
+
   test("bounds large trees with page_size before reading everything", async () => {
     const fixture = await createRepoFixture();
     await mkdir(join(fixture.root, "many"), { recursive: true });
@@ -105,5 +128,6 @@ describe("RepoTreeService", () => {
     ]);
     expect(result.truncated).toBe(true);
     expect(result.next_cursor).toBe("4");
+    expect(result.scan_complete).toBe(false);
   });
 });
