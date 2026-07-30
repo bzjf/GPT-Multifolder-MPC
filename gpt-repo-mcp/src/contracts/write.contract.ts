@@ -2,29 +2,33 @@ import { z } from "zod";
 import { OperationReceiptRefSchema } from "./operation-receipt.contract.js";
 import { RepoInputSchema } from "./repo.contract.js";
 
-export const WriteFileActionSchema = z.enum(["write", "replace", "append", "prepend", "insert_before", "insert_after"]);
-export const WriteGroupedEditActionSchema = z.enum(["replace", "insert_before", "insert_after"]);
-export const WriteChangeTypeSchema = z.enum(["write", "replace", "append", "prepend", "insert_before", "insert_after", "edit"]);
+export const WriteFileActionSchema = z.enum(["write", "replace", "append", "prepend", "insert_before", "insert_after", "replace_lines", "insert_before_line", "insert_after_line"]);
+export const WriteGroupedEditActionSchema = z.enum(["replace", "insert_before", "insert_after", "replace_lines", "insert_before_line", "insert_after_line"]);
+export const WriteChangeTypeSchema = z.enum(["write", "replace", "append", "prepend", "insert_before", "insert_after", "replace_lines", "insert_before_line", "insert_after_line", "edit"]);
 
 export const WriteSimpleChangeSchema = z.object({
   type: WriteFileActionSchema.describe("Per-file operation to apply. Use write for full-file create or overwrite when complete content is available."),
   path: z.string().min(1).describe("Repo-relative POSIX path to write or edit. Absolute paths, traversal, symlink escapes, denied globs, and hard-risk secret paths are rejected."),
-  content: z.string().optional().describe("UTF-8 text to write, append, prepend, or insert. Required for write, append, prepend, insert_before, and insert_after."),
-  find: z.string().min(1).optional().describe("Exact text anchor for replace, insert_before, and insert_after. The text must appear exactly once."),
-  replace: z.string().optional().describe("Replacement text for replace. Required when type is replace.")
+  content: z.string().optional().describe("UTF-8 text to write, append, prepend, insert, or replace whole lines. Required for write, append, prepend, insert_before, insert_after, replace_lines, insert_before_line, and insert_after_line."),
+  find: z.string().min(1).optional().describe("Exact text anchor for replace, insert_before, and insert_after. The text must appear exactly once; prefer start_line/end_line when line numbers are known."),
+  replace: z.string().optional().describe("Replacement text for replace. Required when type is replace."),
+  start_line: z.number().int().positive().optional().describe("1-based target line for replace_lines, insert_before_line, and insert_after_line."),
+  end_line: z.number().int().positive().optional().describe("Inclusive 1-based final line for replace_lines. Defaults to start_line.")
 });
 
 export const WriteGroupedEditItemSchema = z.object({
-  type: WriteGroupedEditActionSchema.describe("Exact-match edit to apply within the current in-memory file text. Only replace, insert_before, and insert_after are supported."),
+  type: WriteGroupedEditActionSchema.describe("Edit to apply within the current in-memory file text. Supports exact-match edits and line-number whole-line edits."),
   find: z.string().min(1).optional().describe("Exact text anchor for this grouped edit. The text must appear exactly once at this edit's turn."),
   replace: z.string().optional().describe("Replacement text for replace grouped edits."),
-  content: z.string().optional().describe("Text to insert for insert_before and insert_after grouped edits.")
+  content: z.string().optional().describe("Text to insert or use as whole-line replacement for grouped edits."),
+  start_line: z.number().int().positive().optional().describe("1-based target line for grouped replace_lines, insert_before_line, and insert_after_line."),
+  end_line: z.number().int().positive().optional().describe("Inclusive 1-based final line for grouped replace_lines. Defaults to start_line.")
 });
 
 export const WriteGroupedEditChangeSchema = z.object({
-  type: z.enum(["edit"]).describe("Grouped same-file exact-match edits. Use when several controlled edits must be applied to one existing file."),
+  type: z.enum(["edit"]).describe("Grouped same-file edits. Prefer line-number whole-line edits after reading targeted line ranges; exact-match edits remain available for unique anchors."),
   path: z.string().min(1).describe("Repo-relative POSIX path to an existing UTF-8 text file. Absolute paths, traversal, symlink escapes, denied globs, and hard-risk secret paths are rejected."),
-  edits: z.array(WriteGroupedEditItemSchema).min(1).max(25).describe("Ordered exact-match edits to apply in memory before writing the file once.")
+  edits: z.array(WriteGroupedEditItemSchema).min(1).max(25).describe("Ordered exact-match or line-number edits to apply in memory before writing the file once.")
 });
 
 export const WriteChangeSchema = z.union([WriteSimpleChangeSchema, WriteGroupedEditChangeSchema]);
@@ -32,9 +36,11 @@ export const WriteChangeSchema = z.union([WriteSimpleChangeSchema, WriteGroupedE
 export const WriteFileInputSchema = RepoInputSchema.extend({
   path: z.string().min(1).describe("Repo-relative POSIX path to write or edit. Absolute paths, traversal, symlink escapes, denied globs, and secret-looking paths are rejected."),
   action: WriteFileActionSchema.optional().describe("Single-file operation. Defaults to write, which creates a missing file or overwrites an existing file."),
-  content: z.string().optional().describe("UTF-8 text to write, append, prepend, or insert. Required for write, append, prepend, insert_before, and insert_after."),
-  find: z.string().min(1).optional().describe("Exact text anchor for replace, insert_before, and insert_after. The text must appear exactly once."),
+  content: z.string().optional().describe("UTF-8 text to write, append, prepend, insert, or replace whole lines. Required for write, append, prepend, insert_before, insert_after, replace_lines, insert_before_line, and insert_after_line."),
+  find: z.string().min(1).optional().describe("Exact text anchor for replace, insert_before, and insert_after. The text must appear exactly once; prefer start_line/end_line when line numbers are known."),
   replace: z.string().optional().describe("Replacement text for replace. Required when action is replace."),
+  start_line: z.number().int().positive().optional().describe("1-based target line for replace_lines, insert_before_line, and insert_after_line."),
+  end_line: z.number().int().positive().optional().describe("Inclusive 1-based final line for replace_lines. Defaults to start_line."),
   create_dirs: z.boolean().optional().describe("Create missing parent directories inside the approved repo root when policy allows the target path."),
   dry_run: z.boolean().optional().describe("Validate policy, path, size, and content checks and compute the result without writing to disk."),
   reason: z.string().min(1).optional().describe("Short human-readable reason for the write request, useful for audit context.")

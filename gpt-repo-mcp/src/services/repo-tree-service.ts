@@ -41,7 +41,7 @@ type CachedTreePage = {
   result: TreeResult;
 };
 
-const TREE_CACHE_TTL_MS = 1_500;
+const TREE_CACHE_TTL_MS = 60_000;
 const TREE_CACHE_MAX_ENTRIES = 256;
 const treePageCache = new Map<string, CachedTreePage>();
 

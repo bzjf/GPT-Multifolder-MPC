@@ -37,7 +37,7 @@ export class WritePolicy {
   assertAllowed(options: {
     path: string;
     bytes: number;
-    action: "write" | "replace" | "append" | "prepend" | "insert_before" | "insert_after" | "edit";
+    action: "write" | "replace" | "append" | "prepend" | "insert_before" | "insert_after" | "replace_lines" | "insert_before_line" | "insert_after_line" | "edit";
   }): void {
     if (!this.config.enabled) {
       throw new RepoReaderError("WRITE_DISABLED", "Writes are disabled for this repository.");

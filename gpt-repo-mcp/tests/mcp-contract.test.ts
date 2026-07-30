@@ -37,6 +37,8 @@ describe("MCP contract", () => {
       expect(SERVER_INSTRUCTIONS).toContain("execute shell commands");
       expect(SERVER_INSTRUCTIONS).toContain("repo_policy_explain only when access is blocked");
       expect(SERVER_INSTRUCTIONS).toContain("repo_last_write");
+      expect(SERVER_INSTRUCTIONS).toContain("CRLF/LF");
+      expect(SERVER_INSTRUCTIONS).toContain("replace_lines");
     } finally {
       await close();
     }
@@ -270,7 +272,46 @@ describe("MCP contract", () => {
               "openWorldHint": false,
               "readOnlyHint": true,
             },
-            "description": "Use this when the user names a specific text file or after repo_tree/repo_search identifies one. Supports line ranges, byte offsets, and cursor pagination for large UTF-8 files while keeping each response bounded. Do not use for broad repository review.",
+            "description": "Use this when the user asks to edit, fix, debug, or implement code and likely files are not fully known. Combines bounded search, candidate selection, batched repo_read_many file reads, and git HEAD in one read-only call so the next step can usually be repo_write_changes.",
+            "inputKeys": [
+              "context_lines",
+              "exclude_globs",
+              "goal",
+              "include_globs",
+              "known_paths",
+              "max_bytes_per_file",
+              "max_files_to_read",
+              "max_search_results_per_query",
+              "max_total_bytes",
+              "repo_id",
+              "search_queries",
+            ],
+            "name": "repo_edit_context",
+            "outputKeys": [
+              "candidate_paths",
+              "files",
+              "goal",
+              "head_sha",
+              "matched_file_count",
+              "next_cursor",
+              "next_tool_hints",
+              "repo_id",
+              "returned_file_count",
+              "searches",
+              "skipped",
+              "truncated",
+              "warnings",
+            ],
+            "title": "Gather edit context",
+          },
+          {
+            "annotations": {
+              "destructiveHint": false,
+              "idempotentHint": true,
+              "openWorldHint": false,
+              "readOnlyHint": true,
+            },
+            "description": "Use this when the user names exactly one specific text file or needs a narrow line/byte page from one file. After search finds multiple likely files, prefer repo_read_many or repo_edit_context instead of repeated repo_fetch_file calls.",
             "inputKeys": [
               "byte_offset",
               "cursor",
@@ -334,7 +375,7 @@ describe("MCP contract", () => {
               "openWorldHint": false,
               "readOnlyHint": true,
             },
-            "description": "Use this when the user asks to read a bounded set of explicit files or glob-matched files. Large files return bounded first chunks with their own next_cursor values, and caller-supplied byte limits cannot exceed configured hard caps. Do not use this to read an entire repository.",
+            "description": "Use this when reading two or more known files, search results, or glob-matched files before editing. Prefer this over repeated repo_fetch_file calls; it batches file reads, keeps per-file chunks bounded, and returns next_cursor values for large files.",
             "inputKeys": [
               "cursor",
               "exclude_globs",
@@ -969,17 +1010,19 @@ describe("MCP contract", () => {
               "openWorldHint": false,
               "readOnlyHint": false,
             },
-            "description": "Use this when the user explicitly asks to write or precisely edit one allowed repository file. Primary low-friction single-file writer/editor for docs, notes, prompts, and focused code edits; requires user approval, repo opt-in, and never runs shell, git, or Codex.",
+            "description": "Use this when the user explicitly asks to write or precisely edit one allowed repository file. Prefer line-number whole-line edits after reading current lines; preserves existing CRLF/LF style for existing-file edits. Requires user approval, repo opt-in, and never runs shell, git, or Codex.",
             "inputKeys": [
               "action",
               "content",
               "create_dirs",
               "dry_run",
+              "end_line",
               "find",
               "path",
               "reason",
               "replace",
               "repo_id",
+              "start_line",
             ],
             "name": "repo_write_file",
             "outputKeys": [
@@ -1005,7 +1048,7 @@ describe("MCP contract", () => {
               "openWorldHint": false,
               "readOnlyHint": false,
             },
-            "description": "Use this when the user explicitly asks to apply a cohesive multi-file edit pack to allowed repository files. Primary low-friction multi-file writer/editor for full-file writes and exact-match edits; requires user approval, repo opt-in, and never runs shell, git, stage, commit, or restore.",
+            "description": "Use this when the user explicitly asks to apply a cohesive multi-file edit pack to allowed repository files. Prefer grouped line-number whole-line edits after reading current lines; preserves existing CRLF/LF style for existing-file edits. Requires user approval, repo opt-in, and never runs shell, git, stage, commit, or restore.",
             "inputKeys": [
               "changes",
               "dry_run",
@@ -1346,6 +1389,7 @@ function representativeCalls(head: string): Record<string, Record<string, unknow
   repo_last_write: { repo_id: "fixture" },
   repo_tree: { repo_id: "fixture", path: ".", max_depth: 2, page_size: 10 },
   repo_search: { repo_id: "fixture", query: "Fixture", max_results: 5 },
+  repo_edit_context: { repo_id: "fixture", goal: "Update fixture app", search_queries: ["fixture"], known_paths: ["src/app.ts"], max_files_to_read: 2 },
   repo_fetch_file: { repo_id: "fixture", path: "README.md", start_line: 1, end_line: 5 },
   repo_fetch_image: { repo_id: "fixture", path: "fixture.png" },
   repo_read_many: { repo_id: "fixture", paths: ["README.md", "src/app.ts"], max_files: 2 },

@@ -5,6 +5,7 @@ import { isAbsolute, join, posix } from "node:path";
 import { DEFAULT_EXCLUDES } from "../policies/default-excludes.js";
 import { DEFAULT_LIMITS } from "../policies/limits.js";
 import { RepoReaderError } from "../runtime/errors.js";
+import { getRepoCacheGeneration } from "../runtime/repo-cache.js";
 import { FileClassifier } from "./file-classifier.js";
 import { isExcludedByGlob, matchesGlob } from "./glob-service.js";
 import { IgnoreEngine, normalizeRepoPath } from "./ignore-engine.js";
@@ -34,6 +35,15 @@ type BackendScan = {
   warnings: string[];
 };
 
+type SearchResponse = {
+  results: Array<SearchMatch & { before: string[]; after: string[] }>;
+  matched_count: number;
+  returned_count: number;
+  scan_complete: boolean;
+  truncated: boolean;
+  next_cursor?: string;
+  warnings: string[];
+};
 type RipgrepAttempt = {
   scan?: BackendScan;
   fallbackWarning?: string;
@@ -41,7 +51,14 @@ type RipgrepAttempt = {
 
 const FALLBACK_TREE_PAGE_SIZE = 512;
 const RIPGREP_RETRY_MS = 30_000;
+const SEARCH_CACHE_TTL_MS = 30_000;
+const SEARCH_CACHE_MAX_ENTRIES = 512;
 let ripgrepUnavailableUntil = 0;
+const searchCache = new Map<string, {
+  generation: number;
+  expiresAt: number;
+  result: SearchResponse;
+}>();
 
 export class SearchService {
   private readonly ignoreEngine = new IgnoreEngine();
@@ -50,14 +67,20 @@ export class SearchService {
 
   constructor(private readonly root: string, private readonly sandbox: PathSandbox) {}
 
-  async search(options: SearchOptions) {
-    this.fastPathEligibility.clear();
+  async search(options: SearchOptions): Promise<SearchResponse> {
     const matcher = createMatcher(options);
     const maxResults = Math.min(options.max_results ?? DEFAULT_LIMITS.max_search_results, DEFAULT_LIMITS.max_search_results);
     const contextLines = Math.min(options.context_lines ?? 0, 5);
     const start = parseCursor(options.cursor);
     const stopAfter = start + maxResults + 1;
+    const generation = getRepoCacheGeneration(this.root);
+    const cacheKey = searchCacheKey(this.root, options, maxResults, contextLines, start);
+    const cached = searchCache.get(cacheKey);
+    if (cached && cached.generation === generation && cached.expiresAt > Date.now()) {
+      return cached.result;
+    }
 
+    this.fastPathEligibility.clear();
     const ripgrep = await this.tryRipgrep(options, stopAfter);
     const scan = ripgrep.scan ?? await this.searchWithTypescript(options, matcher, stopAfter, ripgrep.fallbackWarning);
     scan.matches.sort(compareMatches);
@@ -71,7 +94,7 @@ export class SearchService {
       warnings.push("MATCH_COUNT_LOWER_BOUND");
     }
 
-    return {
+    const result = {
       results,
       matched_count: scan.matches.length,
       returned_count: results.length,
@@ -80,6 +103,13 @@ export class SearchService {
       ...(truncated ? { next_cursor: String(nextIndex) } : {}),
       warnings
     };
+    searchCache.set(cacheKey, {
+      generation,
+      expiresAt: Date.now() + SEARCH_CACHE_TTL_MS,
+      result
+    });
+    trimSearchCache();
+    return result;
   }
 
   private async tryRipgrep(options: SearchOptions, stopAfter: number): Promise<RipgrepAttempt> {
@@ -267,6 +297,32 @@ function buildRipgrepArgs(options: SearchOptions): string[] {
   for (const glob of options.exclude_globs ?? []) args.push("--glob", `!${glob}`);
   args.push("--", options.query, ".");
   return args;
+}
+
+function searchCacheKey(
+  root: string,
+  options: SearchOptions,
+  maxResults: number,
+  contextLines: number,
+  start: number
+): string {
+  return `${root}\u0000${JSON.stringify({
+    query: options.query,
+    mode: options.mode ?? "literal",
+    include_globs: options.include_globs ?? [],
+    exclude_globs: options.exclude_globs ?? [],
+    maxResults,
+    contextLines,
+    start
+  })}`;
+}
+
+function trimSearchCache(): void {
+  while (searchCache.size > SEARCH_CACHE_MAX_ENTRIES) {
+    const oldest = searchCache.keys().next().value as string | undefined;
+    if (!oldest) return;
+    searchCache.delete(oldest);
+  }
 }
 
 function parseRipgrepMatch(line: string): SearchMatch | undefined {

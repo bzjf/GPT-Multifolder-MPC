@@ -4,6 +4,7 @@ import { CleanupPathsInputSchema, CleanupPathsResultSchema } from "../contracts/
 import { CodexReviewInputSchema, CodexReviewResultSchema, CodexTaskInputSchema, CodexTaskResultSchema, CodexTaskWriteInputSchema, CodexTaskWriteResultSchema } from "../contracts/codex-task.contract.js";
 import { CodexReadSkillInputSchema, CodexReadSkillResultSchema, CodexSkillsInputSchema, CodexSkillsResultSchema } from "../contracts/codex-skills.contract.js";
 import { DecisionLogInputSchema, DecisionLogResultSchema } from "../contracts/decision.contract.js";
+import { EditContextInputSchema, EditContextResultSchema } from "../contracts/edit-context.contract.js";
 import { FetchFileInputSchema, FileContentSchema, ReadManyInputSchema, ReadManyResultSchema } from "../contracts/file.contract.js";
 import { FetchImageInputSchema, ImageContentSchema } from "../contracts/image.contract.js";
 import { GitCommitInputSchema, GitCommitResultSchema, GitRecoverInputSchema, GitRecoverResultSchema, GitRestorePathsInputSchema, GitRestorePathsResultSchema, GitStageCommitInputSchema, GitStageCommitResultSchema, GitStageInputSchema, GitStageResultSchema, GitUnstageInputSchema, GitUnstageResultSchema } from "../contracts/git-operations.contract.js";
@@ -29,6 +30,7 @@ export type ToolName =
   | "codex_read_skill"
   | "repo_tree"
   | "repo_search"
+  | "repo_edit_context"
   | "repo_fetch_file"
   | "repo_fetch_image"
   | "repo_read_many"
@@ -91,6 +93,10 @@ export const toolContracts = {
   repo_search: {
     input: SearchInputSchema,
     output: SearchResponseSchema
+  },
+  repo_edit_context: {
+    input: EditContextInputSchema,
+    output: EditContextResultSchema
   },
   repo_fetch_file: {
     input: FetchFileInputSchema,

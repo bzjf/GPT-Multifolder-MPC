@@ -4,6 +4,7 @@ import { PathSandbox } from "../services/path-sandbox.js";
 import { CleanupService } from "../services/cleanup-service.js";
 import { RepoTreeService } from "../services/repo-tree-service.js";
 import { SearchService } from "../services/search-service.js";
+import { EditContextService } from "../services/edit-context-service.js";
 import { FileReader } from "../services/file-reader.js";
 import { ImageReader, type FetchImageOptions } from "../services/image-reader.js";
 import { GitService } from "../services/git-service.js";
@@ -38,6 +39,7 @@ import type { ProjectBriefInput } from "../contracts/project.contract.js";
 import type { TaskInventoryInput } from "../contracts/task.contract.js";
 import type { DecisionLogInput } from "../contracts/decision.contract.js";
 import type { ChangePlanInput } from "../contracts/change-plan.contract.js";
+import type { EditContextInput } from "../contracts/edit-context.contract.js";
 import type { CodexReviewInput, CodexTaskInput, CodexTaskWriteInput } from "../contracts/codex-task.contract.js";
 import type { CodexReadSkillInput, CodexSkillsInput } from "../contracts/codex-skills.contract.js";
 import type { NextActionInput } from "../contracts/next-action.contract.js";
@@ -122,6 +124,21 @@ export const searchHandler: ToolHandler = async (input, context) => safeTool<Sea
   const result = await new SearchService(repo.root, sandbox).search(args);
   audit({ tool: "repo_search", repo_id: args.repo_id, counts: { results: result.returned_count }, truncated: result.truncated, warnings: result.warnings });
   return createSuccessEnvelope(result, `Returned ${result.returned_count} search results.`, { warnings: result.warnings });
+});
+
+export const editContextHandler: ToolHandler = async (input, context) => safeTool<EditContextInput>("repo_edit_context", input, context, async (args) => {
+  const repo = context.registry.get(args.repo_id);
+  const sandbox = new PathSandbox(repo.root);
+  const result = await new EditContextService(repo.root, sandbox, context.registry.limits).context(args);
+  audit({
+    tool: "repo_edit_context",
+    repo_id: args.repo_id,
+    paths: result.files.map((file) => file.path),
+    counts: { searches: result.searches.length, candidates: result.candidate_paths.length, files: result.returned_file_count },
+    truncated: result.truncated,
+    warnings: result.warnings
+  });
+  return createSuccessEnvelope(result, `Prepared edit context with ${result.returned_file_count} files.`, { warnings: result.warnings });
 });
 
 export const fetchFileHandler: ToolHandler = async (input, context) => safeTool<FetchFileOptions & RepoInput>("repo_fetch_file", input, context, async (args) => {
@@ -260,6 +277,7 @@ async function gitCommit(tool: "repo_git_commit" | "repo_write_commit", args: Gi
 export const cleanupPathsHandler: ToolHandler = async (input, context) => safeTool<CleanupPathsInput>("repo_cleanup_paths", input, context, async (args) => {
   const repo = context.registry.get(args.repo_id);
   const result = await new CleanupService(repo.root, new OperationsPolicy(repo.operations)).cleanup(args);
+  if (!result.dry_run && result.deleted.length > 0) invalidateRepoCaches(repo.root);
   audit({ tool: "repo_cleanup_paths", repo_id: args.repo_id, paths: result.deleted.map((entry) => entry.path), warnings: result.warnings });
   return createSuccessEnvelope(result, result.dry_run ? `Dry run checked cleanup for ${result.deleted.length} paths.` : `Cleaned up ${result.deleted.length} paths.`);
 });
@@ -330,6 +348,7 @@ export const prepareCodexTaskHandler: ToolHandler = async (input, context) => sa
 export const writeCodexTaskHandler: ToolHandler = async (input, context) => safeTool<CodexTaskWriteInput>("repo_write_codex_task", input, context, async (args) => {
   const repo = context.registry.get(args.repo_id);
   const result = await new CodexTaskService(repo.root, new PathSandbox(repo.root), new WritePolicy(repo.writes)).write(args);
+  if (!result.dry_run && result.written_paths.length > 0) invalidateRepoCaches(repo.root);
   audit({ tool: "repo_write_codex_task", repo_id: args.repo_id, paths: result.written_paths, warnings: result.warnings });
   return createSuccessEnvelope(
     result,
@@ -364,6 +383,7 @@ export const writeFileHandler: ToolHandler = async (input, context) => safeTool<
   const headShaBefore = await readHeadSha(repo.root);
   const result = await new FileWriter(repo.root, sandbox, new WritePolicy(repo.writes)).write(args);
   if (!result.dry_run && result.changed) {
+    invalidateRepoCaches(repo.root);
     const receipt = await new OperationReceiptService(repo.root).writeLastWrite({
       tool: "repo_write_file",
       repo_id: args.repo_id,
@@ -398,6 +418,7 @@ export const writeChangesHandler: ToolHandler = async (input, context) => safeTo
   const headShaBefore = await readHeadSha(repo.root);
   const result = await new WriteChangesService(repo.root, sandbox, new WritePolicy(repo.writes)).apply(args);
   if (!result.dry_run && result.changed_paths.length > 0) {
+    invalidateRepoCaches(repo.root);
     const receipt = await new OperationReceiptService(repo.root).writeLastWrite({
       tool: "repo_write_changes",
       repo_id: args.repo_id,
@@ -429,6 +450,7 @@ export const writeHandoffHandler: ToolHandler = async (input, context) => safeTo
     new WritePolicy(repo.writes),
     new GitService(repo.root)
   ).write(args);
+  if (!result.dry_run) invalidateRepoCaches(repo.root);
   audit({
     tool: "repo_write_handoff",
     repo_id: args.repo_id,

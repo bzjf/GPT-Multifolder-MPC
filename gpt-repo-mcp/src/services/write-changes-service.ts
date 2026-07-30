@@ -139,6 +139,8 @@ function toWriteFileInput(change: WriteSimpleChange, dryRun: boolean) {
     ...(typeof change.content === "string" ? { content: change.content } : {}),
     ...(typeof change.find === "string" ? { find: change.find } : {}),
     ...(typeof change.replace === "string" ? { replace: change.replace } : {}),
+    ...(typeof change.start_line === "number" ? { start_line: change.start_line } : {}),
+    ...(typeof change.end_line === "number" ? { end_line: change.end_line } : {}),
     create_dirs: change.type === "write" ? true : undefined,
     dry_run: dryRun
   };

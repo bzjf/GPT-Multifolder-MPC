@@ -131,6 +131,28 @@ describe("WriteChangesService", () => {
     ].join("\n"));
   });
 
+  test("grouped edit applies line edits and preserves CRLF", async () => {
+    const fixture = await createRepoFixture();
+    const service = createService(fixture.root, { enabled: true, allowed_globs: ["src/**"] });
+    await writeFile(join(fixture.root, "src", "app.ts"), "export function rawFetch() {\r\n  return fetch('/api/users');\r\n}\r\n");
+
+    const result = await service.apply({
+      changes: [
+        {
+          type: "edit",
+          path: "src/app.ts",
+          edits: [
+            { type: "replace_lines", start_line: 2, end_line: 2, content: "  return fetch('/api/accounts');\n" },
+            { type: "insert_before_line", start_line: 3, content: "  console.log('done');\n" }
+          ]
+        }
+      ]
+    });
+
+    expect(result.changed_paths).toEqual(["src/app.ts"]);
+    expect(result.files[0]).toEqual(expect.objectContaining({ path: "src/app.ts", type: "edit", changed: true }));
+    await expect(readFile(join(fixture.root, "src", "app.ts"), "utf8")).resolves.toBe("export function rawFetch() {\r\n  return fetch('/api/accounts');\r\n  console.log('done');\r\n}\r\n");
+  });
   test("dry_run writes nothing but returns changed paths files and counts", async () => {
     const fixture = await createRepoFixture();
     const service = createService(fixture.root, { enabled: true });

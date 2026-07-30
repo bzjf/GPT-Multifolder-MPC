@@ -214,6 +214,42 @@ describe("FileWriter", () => {
     })).rejects.toMatchObject({ code: "WRITE_CONTENT_REQUIRED" });
   });
 
+  test("replace_lines edits by current line numbers and preserves CRLF", async () => {
+    const fixture = await createRepoFixture();
+    const writer = createWriter(fixture.root, { enabled: true });
+    await writeFile(join(fixture.root, "docs", "crlf-edit.md"), "alpha\r\nbeta\r\ngamma\r\n");
+
+    await writer.write({
+      path: "docs/crlf-edit.md",
+      action: "replace_lines",
+      start_line: 2,
+      end_line: 2,
+      content: "BETA\n"
+    });
+
+    await expect(readFile(join(fixture.root, "docs", "crlf-edit.md"), "utf8")).resolves.toBe("alpha\r\nBETA\r\ngamma\r\n");
+  });
+
+  test("line insert actions edit whole lines without exact anchors", async () => {
+    const fixture = await createRepoFixture();
+    const writer = createWriter(fixture.root, { enabled: true });
+    await writeFile(join(fixture.root, "docs", "line-edit.md"), "one\ntwo\nthree\n");
+
+    await writer.write({
+      path: "docs/line-edit.md",
+      action: "insert_before_line",
+      start_line: 2,
+      content: "before two\n"
+    });
+    await writer.write({
+      path: "docs/line-edit.md",
+      action: "insert_after_line",
+      start_line: 3,
+      content: "after two\n"
+    });
+
+    await expect(readFile(join(fixture.root, "docs", "line-edit.md"), "utf8")).resolves.toBe("one\nbefore two\ntwo\nafter two\nthree\n");
+  });
   test("dry_run writes nothing", async () => {
     const fixture = await createRepoFixture();
     const writer = createWriter(fixture.root, { enabled: true });

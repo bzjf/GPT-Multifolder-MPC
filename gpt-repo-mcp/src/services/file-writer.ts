@@ -229,7 +229,10 @@ export class FileWriter {
     target: WriteTarget
   ): ComputedWrite {
     if (action === "write") {
-      const content = requireContent(input, action);
+      const rawContent = requireContent(input, action);
+      const content = target.exists
+        ? normalizeLineEndings(rawContent, detectPreferredLineEnding(target.oldText))
+        : rawContent;
       return {
         action,
         nextText: content,
@@ -244,32 +247,39 @@ export class FileWriter {
       throw new RepoReaderError("BINARY_FILE_REJECTED", `Binary file cannot be edited: ${target.repoPath}`);
     }
 
-    const oldText = target.oldText;
+    const lineEnding = detectPreferredLineEnding(target.oldText);
+    const oldText = normalizeLineEndings(target.oldText, lineEnding);
     let nextText: string;
     if (action === "append") {
-      nextText = oldText + requireContent(input, action);
+      nextText = oldText + normalizeLineEndings(requireContent(input, action), lineEnding);
     } else if (action === "prepend") {
-      nextText = requireContent(input, action) + oldText;
+      nextText = normalizeLineEndings(requireContent(input, action), lineEnding) + oldText;
     } else if (action === "replace") {
-      const find = requireFind(input, action);
-      const replace = requireReplace(input, action);
+      const find = normalizeLineEndings(requireFind(input, action), lineEnding);
+      const replace = normalizeLineEndings(requireReplace(input, action), lineEnding);
       assertFindAppearsExactlyOnce(oldText, find, target.repoPath);
       nextText = oldText.replace(find, replace);
     } else if (action === "insert_before") {
-      const find = requireFind(input, action);
+      const find = normalizeLineEndings(requireFind(input, action), lineEnding);
       assertFindAppearsExactlyOnce(oldText, find, target.repoPath);
       const index = oldText.indexOf(find);
-      nextText = oldText.slice(0, index) + requireContent(input, action) + oldText.slice(index);
-    } else {
-      const find = requireFind(input, action);
+      nextText = oldText.slice(0, index) + normalizeLineEndings(requireContent(input, action), lineEnding) + oldText.slice(index);
+    } else if (action === "insert_after") {
+      const find = normalizeLineEndings(requireFind(input, action), lineEnding);
       assertFindAppearsExactlyOnce(oldText, find, target.repoPath);
       const index = oldText.indexOf(find) + find.length;
-      nextText = oldText.slice(0, index) + requireContent(input, action) + oldText.slice(index);
+      nextText = oldText.slice(0, index) + normalizeLineEndings(requireContent(input, action), lineEnding) + oldText.slice(index);
+    } else {
+      nextText = applyLineEdit(oldText, {
+        type: action,
+        start_line: input.start_line,
+        end_line: input.end_line,
+        content: input.content
+      }, target.repoPath, lineEnding);
     }
 
     return { action, nextText, nextContent: Buffer.from(nextText, "utf8") };
   }
-
   private async resolveTarget(repoPath: string, createDirs: boolean): Promise<WriteTarget> {
     try {
       const resolved = await this.sandbox.resolve(repoPath);
@@ -409,29 +419,131 @@ function requireReplace(input: Omit<WriteFileInput, "repo_id">, action: WriteAct
 function assertFindAppearsExactlyOnce(text: string, find: string, repoPath: string): void {
   const first = text.indexOf(find);
   if (first === -1) {
-    throw new RepoReaderError("WRITE_FIND_NOT_FOUND", `find text was not found in ${repoPath}.`);
+    throw new RepoReaderError(
+      "WRITE_FIND_NOT_FOUND",
+      `find text was not found in ${repoPath}; re-read the target lines and prefer replace_lines, insert_before_line, or insert_after_line when line numbers are known.`
+    );
   }
   if (text.indexOf(find, first + find.length) !== -1) {
-    throw new RepoReaderError("WRITE_FIND_NOT_UNIQUE", `find text appears more than once in ${repoPath}.`);
+    throw new RepoReaderError(
+      "WRITE_FIND_NOT_UNIQUE",
+      `find text appears more than once in ${repoPath}; use a more specific anchor or line-number edit.`
+    );
   }
 }
 
+type LineEnding = "\n" | "\r\n";
+type LineEditKind = "replace_lines" | "insert_before_line" | "insert_after_line";
+type LineEditInput = {
+  type: LineEditKind;
+  start_line?: number;
+  end_line?: number;
+  content?: string;
+};
+
 function applyGroupedEdits(text: string, edits: WriteGroupedEditChange["edits"], repoPath: string): string {
-  let nextText = text;
+  const lineEnding = detectPreferredLineEnding(text);
+  let nextText = normalizeLineEndings(text, lineEnding);
   for (const edit of edits) {
-    const find = requireGroupedFind(edit, repoPath);
+    if (isLineEditKind(edit.type)) {
+      nextText = applyLineEdit(nextText, {
+        type: edit.type,
+        start_line: edit.start_line,
+        end_line: edit.end_line,
+        content: edit.content
+      }, repoPath, lineEnding);
+      continue;
+    }
+
+    const find = normalizeLineEndings(requireGroupedFind(edit, repoPath), lineEnding);
     assertFindAppearsExactlyOnce(nextText, find, repoPath);
     if (edit.type === "replace") {
-      nextText = nextText.replace(find, requireGroupedReplace(edit));
+      nextText = nextText.replace(find, normalizeLineEndings(requireGroupedReplace(edit), lineEnding));
     } else if (edit.type === "insert_before") {
       const index = nextText.indexOf(find);
-      nextText = nextText.slice(0, index) + requireGroupedContent(edit) + nextText.slice(index);
+      nextText = nextText.slice(0, index) + normalizeLineEndings(requireGroupedContent(edit), lineEnding) + nextText.slice(index);
     } else {
       const index = nextText.indexOf(find) + find.length;
-      nextText = nextText.slice(0, index) + requireGroupedContent(edit) + nextText.slice(index);
+      nextText = nextText.slice(0, index) + normalizeLineEndings(requireGroupedContent(edit), lineEnding) + nextText.slice(index);
     }
   }
   return nextText;
+}
+
+function applyLineEdit(text: string, edit: LineEditInput, repoPath: string, lineEnding: LineEnding): string {
+  const state = splitLineState(text, lineEnding);
+  const startLine = requireStartLine(edit, repoPath);
+  assertLineExists(startLine, state.lines.length, repoPath);
+
+  const contentLines = lineEditContentToLines(requireLineEditContent(edit, repoPath), lineEnding);
+  if (edit.type === "replace_lines") {
+    const endLine = edit.end_line ?? startLine;
+    if (endLine < startLine) {
+      throw new RepoReaderError("VALIDATION_ERROR", `end_line must be greater than or equal to start_line for ${repoPath}.`);
+    }
+    assertLineExists(endLine, state.lines.length, repoPath);
+    state.lines.splice(startLine - 1, endLine - startLine + 1, ...contentLines);
+  } else {
+    const insertIndex = edit.type === "insert_before_line" ? startLine - 1 : startLine;
+    state.lines.splice(insertIndex, 0, ...contentLines);
+  }
+
+  return joinLineState(state.lines, state.trailingNewline, lineEnding);
+}
+
+function detectPreferredLineEnding(text: string): LineEnding {
+  const crlfCount = (text.match(/\r\n/g) ?? []).length;
+  const lfCount = (text.match(/\n/g) ?? []).length - crlfCount;
+  return crlfCount > lfCount ? "\r\n" : "\n";
+}
+
+function normalizeLineEndings(text: string, lineEnding: LineEnding): string {
+  return text.replace(/\r\n|\r|\n/g, lineEnding);
+}
+
+function splitLineState(text: string, lineEnding: LineEnding): { lines: string[]; trailingNewline: boolean } {
+  const normalized = normalizeLineEndings(text, lineEnding);
+  const trailingNewline = normalized.endsWith(lineEnding);
+  const body = trailingNewline ? normalized.slice(0, -lineEnding.length) : normalized;
+  if (body.length === 0) {
+    return { lines: trailingNewline ? [""] : [], trailingNewline };
+  }
+  return { lines: body.split(lineEnding), trailingNewline };
+}
+
+function joinLineState(lines: string[], trailingNewline: boolean, lineEnding: LineEnding): string {
+  if (lines.length === 0) return "";
+  return `${lines.join(lineEnding)}${trailingNewline ? lineEnding : ""}`;
+}
+
+function lineEditContentToLines(content: string, lineEnding: LineEnding): string[] {
+  const normalized = normalizeLineEndings(content, lineEnding);
+  const body = normalized.endsWith(lineEnding) ? normalized.slice(0, -lineEnding.length) : normalized;
+  return body.length === 0 ? [] : body.split(lineEnding);
+}
+
+function isLineEditKind(type: string): type is LineEditKind {
+  return type === "replace_lines" || type === "insert_before_line" || type === "insert_after_line";
+}
+
+function requireStartLine(input: { start_line?: number }, repoPath: string): number {
+  if (!Number.isInteger(input.start_line) || Number(input.start_line) <= 0) {
+    throw new RepoReaderError("VALIDATION_ERROR", `start_line is required for line edit in ${repoPath}.`);
+  }
+  return Number(input.start_line);
+}
+
+function assertLineExists(line: number, lineCount: number, repoPath: string): void {
+  if (line > lineCount) {
+    throw new RepoReaderError("VALIDATION_ERROR", `line ${line} is beyond the end of ${repoPath} (${lineCount} lines).`);
+  }
+}
+
+function requireLineEditContent(edit: LineEditInput, repoPath: string): string {
+  if (typeof edit.content !== "string") {
+    throw new RepoReaderError("WRITE_CONTENT_REQUIRED", `content is required for ${edit.type} in ${repoPath}.`);
+  }
+  return edit.content;
 }
 
 function requireGroupedFind(edit: WriteGroupedEditChange["edits"][number], repoPath: string): string {
@@ -454,7 +566,6 @@ function requireGroupedContent(edit: WriteGroupedEditChange["edits"][number]): s
   }
   return edit.content;
 }
-
 function summarize(repoPath: string, action: WriteAction, created: boolean, changed: boolean, dryRun: boolean): string {
   if (!changed) {
     return `No changes for ${repoPath}.`;

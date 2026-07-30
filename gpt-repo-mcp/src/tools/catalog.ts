@@ -10,6 +10,7 @@ import {
   decisionMemoryHandler,
   fetchFileHandler,
   fetchImageHandler,
+  editContextHandler,
   gitCommitHandler,
   gitDiffHandler,
   gitReviewHandler,
@@ -113,6 +114,15 @@ export const toolCatalog: ToolDefinition[] = [
     outputSchema: toolContracts.repo_search.output,
     annotations: readOnlyAnnotations,
     handler: searchHandler
+  },
+  {
+    name: "repo_edit_context",
+    title: "Gather edit context",
+    description: descriptions.repo_edit_context,
+    inputSchema: toolContracts.repo_edit_context.input,
+    outputSchema: toolContracts.repo_edit_context.output,
+    annotations: readOnlyAnnotations,
+    handler: editContextHandler
   },
   {
     name: "repo_fetch_file",

@@ -6,12 +6,12 @@ export const PathInputSchema = z.object({
 });
 
 export const GlobScopeSchema = z.object({
-  include_globs: z.array(z.string()).optional(),
+  include_globs: z.array(z.string()).optional().describe("Glob patterns for bounded batched reads when exact files are not all known."),
   exclude_globs: z.array(z.string()).optional()
 });
 
 export const FetchFileInputSchema = RepoInputSchema.extend({
-  path: z.string().min(1).describe("Repo-relative POSIX path to a UTF-8 text file."),
+  path: z.string().min(1).describe("Repo-relative POSIX path to exactly one UTF-8 text file. For two or more files, use repo_read_many."),
   start_line: z.number().int().positive().optional().describe("First 1-based line to return. Selects streaming line mode."),
   end_line: z.number().int().positive().optional().describe("Last inclusive 1-based line to return."),
   byte_offset: z.number().int().nonnegative().optional().describe("Source byte offset for byte-window mode. UTF-8 boundary adjustment may be reported in warnings."),
@@ -21,12 +21,12 @@ export const FetchFileInputSchema = RepoInputSchema.extend({
 });
 
 export const ReadManyInputSchema = RepoInputSchema.extend({
-  paths: z.array(z.string()).optional(),
-  include_globs: z.array(z.string()).optional(),
-  exclude_globs: z.array(z.string()).optional(),
-  max_files: z.number().int().positive().optional(),
-  max_bytes_per_file: z.number().int().positive().optional(),
-  max_total_bytes: z.number().int().positive().optional(),
+  paths: z.array(z.string()).optional().describe("Explicit repo-relative POSIX file paths to read together. Prefer this after repo_search returns multiple likely files."),
+  include_globs: z.array(z.string()).optional().describe("Glob patterns for bounded batched reads when exact files are not all known."),
+  exclude_globs: z.array(z.string()).optional().describe("Glob patterns to exclude from the batched read."),
+  max_files: z.number().int().positive().optional().describe("Maximum files to return in one batch, capped by server configuration."),
+  max_bytes_per_file: z.number().int().positive().optional().describe("Maximum bytes per returned file chunk, capped by server configuration."),
+  max_total_bytes: z.number().int().positive().optional().describe("Maximum total bytes across the batch, capped by server configuration."),
   cursor: z.string().regex(/^\d+$/).max(32).optional().describe("Zero-based file-list cursor returned by a previous repo_read_many call.")
 }).refine((input) => (input.paths?.length ?? 0) > 0 || (input.include_globs?.length ?? 0) > 0, {
   message: "repo_read_many requires paths or include_globs.",

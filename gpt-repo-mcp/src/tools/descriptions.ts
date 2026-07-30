@@ -13,12 +13,14 @@ export const descriptions = {
     "Use this when the user asks to inspect repository structure or locate likely files by directory. Uses bounded lexicographic pagination and stops scanning after the requested page; excluded_summary is partial while scan_complete is false. Do not use this when the user asks to read file contents.",
   repo_search:
     "Use this when the user asks to find code, inspect usages, perform a bughunt, or locate relevant files before reading them. Uses a bounded ripgrep fast path when available and a safe TypeScript fallback; matched_count is a lower bound when scan_complete is false. Prefer this before repo_read_many.",
+  repo_edit_context:
+    "Use this when the user asks to edit, fix, debug, or implement code and likely files are not fully known. Combines bounded search, candidate selection, batched repo_read_many file reads, and git HEAD in one read-only call so the next step can usually be repo_write_changes.",
   repo_fetch_file:
-    "Use this when the user names a specific text file or after repo_tree/repo_search identifies one. Supports line ranges, byte offsets, and cursor pagination for large UTF-8 files while keeping each response bounded. Do not use for broad repository review.",
+    "Use this when the user names exactly one specific text file or needs a narrow line/byte page from one file. After search finds multiple likely files, prefer repo_read_many or repo_edit_context instead of repeated repo_fetch_file calls.",
   repo_fetch_image:
     "Use this when the user asks to inspect a specific PNG, JPEG, or WebP image inside an approved repository. Returns image content to the client plus safe metadata; does not read arbitrary binary files.",
   repo_read_many:
-    "Use this when the user asks to read a bounded set of explicit files or glob-matched files. Large files return bounded first chunks with their own next_cursor values, and caller-supplied byte limits cannot exceed configured hard caps. Do not use this to read an entire repository.",
+    "Use this when reading two or more known files, search results, or glob-matched files before editing. Prefer this over repeated repo_fetch_file calls; it batches file reads, keeps per-file chunks bounded, and returns next_cursor values for large files.",
   repo_git_status:
     "Use this when the user asks for git status, branch, dirty files, or changed file counts. Do not use this to inspect file contents.",
   repo_git_diff:
@@ -64,9 +66,9 @@ export const descriptions = {
   repo_codex_review:
     "Use this when Codex has finished or the user asks to review a repo-local Codex run. Reads .chatgpt/codex-runs/<run_id>/RESULT.md and git diff review state without mutating files or git.",
   repo_write_file:
-    "Use this when the user explicitly asks to write or precisely edit one allowed repository file. Primary low-friction single-file writer/editor for docs, notes, prompts, and focused code edits; requires user approval, repo opt-in, and never runs shell, git, or Codex.",
+    "Use this when the user explicitly asks to write or precisely edit one allowed repository file. Prefer line-number whole-line edits after reading current lines; preserves existing CRLF/LF style for existing-file edits. Requires user approval, repo opt-in, and never runs shell, git, or Codex.",
   repo_write_changes:
-    "Use this when the user explicitly asks to apply a cohesive multi-file edit pack to allowed repository files. Primary low-friction multi-file writer/editor for full-file writes and exact-match edits; requires user approval, repo opt-in, and never runs shell, git, stage, commit, or restore.",
+    "Use this when the user explicitly asks to apply a cohesive multi-file edit pack to allowed repository files. Prefer grouped line-number whole-line edits after reading current lines; preserves existing CRLF/LF style for existing-file edits. Requires user approval, repo opt-in, and never runs shell, git, stage, commit, or restore.",
   repo_write_handoff:
     "Use this when the user asks for a local-only ChatGPT handoff: skapa handoff, create handoff, skriv handoff, session handoff, resume note, fortsättningsanteckning, ny chatt context, or överlämning till nästa chatt. Creates .chatgpt/handoffs/*.local.md and updates current.local.md; never stages, commits, pushes, resets, checks out, or runs shell commands."
 } as const;

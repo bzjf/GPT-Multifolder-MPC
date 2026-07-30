@@ -55,6 +55,7 @@ describe("tool catalog contracts", () => {
       "codex_read_skill",
       "repo_tree",
       "repo_search",
+      "repo_edit_context",
       "repo_fetch_file",
       "repo_fetch_image",
       "repo_read_many",
@@ -259,6 +260,8 @@ describe("tool catalog contracts", () => {
       ["repo_write_file.content", WriteFileInputSchema.shape.content],
       ["repo_write_file.find", WriteFileInputSchema.shape.find],
       ["repo_write_file.replace", WriteFileInputSchema.shape.replace],
+      ["repo_write_file.start_line", WriteFileInputSchema.shape.start_line],
+      ["repo_write_file.end_line", WriteFileInputSchema.shape.end_line],
       ["repo_write_file.create_dirs", WriteFileInputSchema.shape.create_dirs],
       ["repo_write_file.dry_run", WriteFileInputSchema.shape.dry_run],
       ["repo_write_file.reason", WriteFileInputSchema.shape.reason],
@@ -476,6 +479,30 @@ describe("tool catalog contracts", () => {
     expect(parsed.error?.issues).toBeUndefined();
   });
 
+  test("repo_write_changes schema accepts line-number edits", () => {
+    const parsed = WriteChangesInputSchema.safeParse({
+      repo_id: "fixture",
+      changes: [
+        {
+          type: "replace_lines",
+          path: "src/app.ts",
+          start_line: 10,
+          end_line: 12,
+          content: "const enabled = true;\n"
+        },
+        {
+          type: "edit",
+          path: "src/other.ts",
+          edits: [
+            { type: "insert_before_line", start_line: 3, content: "const before = true;\n" },
+            { type: "insert_after_line", start_line: 7, content: "const after = true;\n" }
+          ]
+        }
+      ]
+    });
+
+    expect(parsed.error?.issues).toBeUndefined();
+  });
   test("repo_write_changes schema rejects unsupported grouped edit operations", () => {
     const parsed = WriteChangesInputSchema.safeParse({
       repo_id: "fixture",
@@ -915,7 +942,46 @@ describe("tool catalog contracts", () => {
             "openWorldHint": false,
             "readOnlyHint": true,
           },
-          "description": "Use this when the user names a specific text file or after repo_tree/repo_search identifies one. Supports line ranges, byte offsets, and cursor pagination for large UTF-8 files while keeping each response bounded. Do not use for broad repository review.",
+          "description": "Use this when the user asks to edit, fix, debug, or implement code and likely files are not fully known. Combines bounded search, candidate selection, batched repo_read_many file reads, and git HEAD in one read-only call so the next step can usually be repo_write_changes.",
+          "inputKeys": [
+            "context_lines",
+            "exclude_globs",
+            "goal",
+            "include_globs",
+            "known_paths",
+            "max_bytes_per_file",
+            "max_files_to_read",
+            "max_search_results_per_query",
+            "max_total_bytes",
+            "repo_id",
+            "search_queries",
+          ],
+          "name": "repo_edit_context",
+          "outputKeys": [
+            "candidate_paths",
+            "files",
+            "goal",
+            "head_sha",
+            "matched_file_count",
+            "next_cursor",
+            "next_tool_hints",
+            "repo_id",
+            "returned_file_count",
+            "searches",
+            "skipped",
+            "truncated",
+            "warnings",
+          ],
+          "title": "Gather edit context",
+        },
+        {
+          "annotations": {
+            "destructiveHint": false,
+            "idempotentHint": true,
+            "openWorldHint": false,
+            "readOnlyHint": true,
+          },
+          "description": "Use this when the user names exactly one specific text file or needs a narrow line/byte page from one file. After search finds multiple likely files, prefer repo_read_many or repo_edit_context instead of repeated repo_fetch_file calls.",
           "inputKeys": [
             "byte_offset",
             "cursor",
@@ -979,7 +1045,7 @@ describe("tool catalog contracts", () => {
             "openWorldHint": false,
             "readOnlyHint": true,
           },
-          "description": "Use this when the user asks to read a bounded set of explicit files or glob-matched files. Large files return bounded first chunks with their own next_cursor values, and caller-supplied byte limits cannot exceed configured hard caps. Do not use this to read an entire repository.",
+          "description": "Use this when reading two or more known files, search results, or glob-matched files before editing. Prefer this over repeated repo_fetch_file calls; it batches file reads, keeps per-file chunks bounded, and returns next_cursor values for large files.",
           "inputKeys": [
             "cursor",
             "exclude_globs",
@@ -1614,17 +1680,19 @@ describe("tool catalog contracts", () => {
             "openWorldHint": false,
             "readOnlyHint": false,
           },
-          "description": "Use this when the user explicitly asks to write or precisely edit one allowed repository file. Primary low-friction single-file writer/editor for docs, notes, prompts, and focused code edits; requires user approval, repo opt-in, and never runs shell, git, or Codex.",
+          "description": "Use this when the user explicitly asks to write or precisely edit one allowed repository file. Prefer line-number whole-line edits after reading current lines; preserves existing CRLF/LF style for existing-file edits. Requires user approval, repo opt-in, and never runs shell, git, or Codex.",
           "inputKeys": [
             "action",
             "content",
             "create_dirs",
             "dry_run",
+            "end_line",
             "find",
             "path",
             "reason",
             "replace",
             "repo_id",
+            "start_line",
           ],
           "name": "repo_write_file",
           "outputKeys": [
@@ -1650,7 +1718,7 @@ describe("tool catalog contracts", () => {
             "openWorldHint": false,
             "readOnlyHint": false,
           },
-          "description": "Use this when the user explicitly asks to apply a cohesive multi-file edit pack to allowed repository files. Primary low-friction multi-file writer/editor for full-file writes and exact-match edits; requires user approval, repo opt-in, and never runs shell, git, stage, commit, or restore.",
+          "description": "Use this when the user explicitly asks to apply a cohesive multi-file edit pack to allowed repository files. Prefer grouped line-number whole-line edits after reading current lines; preserves existing CRLF/LF style for existing-file edits. Requires user approval, repo opt-in, and never runs shell, git, stage, commit, or restore.",
           "inputKeys": [
             "changes",
             "dry_run",
