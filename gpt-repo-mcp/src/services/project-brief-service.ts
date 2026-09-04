@@ -1,5 +1,5 @@
 import { extname } from "node:path";
-import { DEFAULT_LIMITS } from "../policies/limits.js";
+import { DEFAULT_LIMITS, type RuntimeLimits } from "../policies/limits.js";
 import type { RepoConfig } from "./root-registry.js";
 import type { PathSandbox } from "./path-sandbox.js";
 import { RepoTreeService } from "./repo-tree-service.js";
@@ -23,15 +23,15 @@ type PackageJson = {
 };
 
 export class ProjectBriefService {
-  constructor(private readonly repo: RepoConfig, private readonly sandbox: PathSandbox) {}
+  constructor(private readonly repo: RepoConfig, private readonly sandbox: PathSandbox, private readonly limits: RuntimeLimits = DEFAULT_LIMITS) {}
 
   async brief(options: ProjectBriefOptions = {}) {
     const include = new Set(options.include ?? DEFAULT_INCLUDE);
     const warnings: string[] = [];
-    const tree = await new RepoTreeService(this.repo.root, this.sandbox).tree({
+    const tree = await new RepoTreeService(this.repo.root, this.sandbox, this.limits).tree({
       include_files: true,
-      max_depth: 4,
-      page_size: MAX_TREE_ENTRIES,
+      max_depth: Math.min(4, this.limits.max_depth),
+      page_size: Math.min(MAX_TREE_ENTRIES, this.limits.max_tree_entries),
       respect_default_excludes: true
     });
     const filePaths = tree.entries.filter((entry) => entry.type === "file").map((entry) => entry.path);
@@ -105,7 +105,7 @@ export class ProjectBriefService {
   private async readTextIfPresent(path: string, warnings: string[]): Promise<string | undefined> {
     try {
       const resolved = await this.sandbox.resolve(path);
-      const result = await readFilePrefix(resolved.absolutePath, DEFAULT_LIMITS.max_project_brief_doc_bytes);
+      const result = await readFilePrefix(resolved.absolutePath, this.limits.max_project_brief_doc_bytes);
       if (result.truncated) {
         warnings.push(`FILE_TRUNCATED:${path}`);
       }

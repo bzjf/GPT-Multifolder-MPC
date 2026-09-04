@@ -1,5 +1,5 @@
 import { basename } from "node:path";
-import { DEFAULT_LIMITS } from "../policies/limits.js";
+import { DEFAULT_LIMITS, type RuntimeLimits } from "../policies/limits.js";
 import { readFilePrefix } from "./bounded-read.js";
 import { IgnoreEngine } from "./ignore-engine.js";
 import { PathSandbox } from "./path-sandbox.js";
@@ -19,7 +19,7 @@ type SourceHit = {
 export class DecisionLogService {
   private readonly ignoreEngine = new IgnoreEngine();
 
-  constructor(private readonly root: string, private readonly sandbox: PathSandbox) {}
+  constructor(private readonly root: string, private readonly sandbox: PathSandbox, private readonly limits: RuntimeLimits = DEFAULT_LIMITS) {}
 
   async decisionLog(options: DecisionLogOptions = {}) {
     const includeSources = new Set(options.include_sources ?? DEFAULT_SOURCES);
@@ -45,18 +45,18 @@ export class DecisionLogService {
     }
 
     return {
-      decisions: decisions.slice(0, DEFAULT_LIMITS.max_decision_log_sources),
-      conventions: conventions.slice(0, DEFAULT_LIMITS.max_decision_log_sources),
+      decisions: decisions.slice(0, this.limits.max_decision_log_sources),
+      conventions: conventions.slice(0, this.limits.max_decision_log_sources),
       gaps,
       warnings
     };
   }
 
   private async collectSources(includeSources: Set<DecisionSource>, warnings: string[]): Promise<SourceHit[]> {
-    const tree = await new RepoTreeService(this.root, this.sandbox).tree({
+    const tree = await new RepoTreeService(this.root, this.sandbox, this.limits).tree({
       include_files: true,
-      max_depth: 4,
-      page_size: DEFAULT_LIMITS.max_tree_entries,
+      max_depth: Math.min(4, this.limits.max_depth),
+      page_size: this.limits.max_tree_entries,
       respect_default_excludes: true
     });
     if (tree.truncated) {
@@ -68,12 +68,12 @@ export class DecisionLogService {
       .map((entry) => ({ path: entry.path, source_type: classifySource(entry.path, includeSources) }))
       .filter((entry): entry is { path: string; source_type: DecisionSource } => Boolean(entry.source_type))
       .filter((entry) => !this.ignoreEngine.isSensitiveCandidate(entry.path));
-    const sourcePaths = candidates.slice(0, DEFAULT_LIMITS.max_decision_log_sources);
+    const sourcePaths = candidates.slice(0, this.limits.max_decision_log_sources);
 
     const sources = [];
     for (const sourcePath of sourcePaths) {
       const resolved = await this.sandbox.resolve(sourcePath.path);
-      const readResult = await readFilePrefix(resolved.absolutePath, DEFAULT_LIMITS.max_decision_log_source_bytes);
+      const readResult = await readFilePrefix(resolved.absolutePath, this.limits.max_decision_log_source_bytes);
       if (readResult.truncated) {
         warnings.push(`FILE_TRUNCATED:${sourcePath.path}`);
       }

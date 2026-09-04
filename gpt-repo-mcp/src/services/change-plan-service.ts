@@ -1,4 +1,4 @@
-import { DEFAULT_LIMITS } from "../policies/limits.js";
+import { DEFAULT_LIMITS, type RuntimeLimits } from "../policies/limits.js";
 import { isExcludedByGlob, matchesGlob } from "./glob-service.js";
 import { IgnoreEngine } from "./ignore-engine.js";
 import { PathSandbox } from "./path-sandbox.js";
@@ -16,11 +16,11 @@ const IMPLEMENTATION_EXTENSIONS = /\.(ts|tsx|js|jsx|py|go|rs|java|css|html|json|
 export class ChangePlanService {
   private readonly ignoreEngine = new IgnoreEngine();
 
-  constructor(private readonly root: string, private readonly sandbox: PathSandbox) {}
+  constructor(private readonly root: string, private readonly sandbox: PathSandbox, private readonly limits: RuntimeLimits = DEFAULT_LIMITS) {}
 
   async plan(options: ChangePlanOptions) {
     const warnings: string[] = [];
-    const maxFiles = Math.min(options.max_files_to_inspect ?? maxFilesForDepth(options.planning_depth), DEFAULT_LIMITS.max_change_plan_files);
+    const maxFiles = Math.min(options.max_files_to_inspect ?? maxFilesForDepth(options.planning_depth), this.limits.max_change_plan_files);
     const candidates = await this.collectCandidateFiles(options, warnings);
     const rankedFiles = rankRelevantFiles(options.goal, candidates);
     if (rankedFiles.length > maxFiles) {
@@ -44,16 +44,16 @@ export class ChangePlanService {
   }
 
   private async collectCandidateFiles(options: ChangePlanOptions, warnings: string[]): Promise<string[]> {
-    const treeService = new RepoTreeService(this.root, this.sandbox);
+    const treeService = new RepoTreeService(this.root, this.sandbox, this.limits);
     const candidates: string[] = [];
     let cursor: string | undefined;
     let pages = 0;
 
-    while (pages < DEFAULT_LIMITS.max_change_plan_tree_pages) {
+    while (pages < this.limits.max_change_plan_tree_pages) {
       const tree = await treeService.tree({
         include_files: true,
         respect_default_excludes: true,
-        page_size: DEFAULT_LIMITS.max_tree_entries,
+        page_size: this.limits.max_tree_entries,
         cursor
       });
       pages += 1;

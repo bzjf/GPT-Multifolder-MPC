@@ -1,5 +1,5 @@
 import { readdir } from "node:fs/promises";
-import { DEFAULT_LIMITS } from "../policies/limits.js";
+import { DEFAULT_LIMITS, type RuntimeLimits } from "../policies/limits.js";
 import { RepoReaderError } from "../runtime/errors.js";
 import { getRepoCacheGeneration } from "../runtime/repo-cache.js";
 import { IgnoreEngine } from "./ignore-engine.js";
@@ -48,12 +48,12 @@ const treePageCache = new Map<string, CachedTreePage>();
 export class RepoTreeService {
   private readonly ignoreEngine = new IgnoreEngine();
 
-  constructor(private readonly root: string, private readonly sandbox: PathSandbox) {}
+  constructor(private readonly root: string, private readonly sandbox: PathSandbox, private readonly limits: RuntimeLimits = DEFAULT_LIMITS) {}
 
   async tree(options: TreeOptions): Promise<TreeResult> {
     const start = validateRepoPath(options.path ?? ".");
-    const maxDepth = Math.min(options.max_depth ?? DEFAULT_LIMITS.max_depth, DEFAULT_LIMITS.max_depth);
-    const pageSize = Math.min(options.page_size ?? DEFAULT_LIMITS.max_tree_entries, DEFAULT_LIMITS.max_tree_entries);
+    const maxDepth = Math.min(options.max_depth ?? this.limits.max_depth, this.limits.max_depth);
+    const pageSize = Math.min(options.page_size ?? this.limits.max_tree_entries, this.limits.max_tree_entries);
     const cursor = parseCursor(options.cursor);
     const normalizedOptions = {
       start,

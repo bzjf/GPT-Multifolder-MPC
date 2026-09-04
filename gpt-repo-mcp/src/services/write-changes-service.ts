@@ -155,7 +155,7 @@ function assertNonConflictingTargetPaths(changes: WriteChange[]): void {
     if (conflict) {
       throw new RepoReaderError(
         "VALIDATION_ERROR",
-        `Edit pack contains conflicting target paths: ${conflict.path} and ${path}`
+        `Edit pack contains conflicting target paths: ${conflict.path} and ${path}. Each target path may appear at most once; combine multiple edits to the same file into one type=edit change with an ordered edits array.`
       );
     }
     seen.push({ path, key });

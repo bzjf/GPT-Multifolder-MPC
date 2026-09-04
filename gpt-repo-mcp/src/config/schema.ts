@@ -40,6 +40,10 @@ export const LimitsConfigSchema = z.object({
   max_task_inventory_tree_pages: PositiveIntSchema.optional(),
   max_task_inventory_file_bytes: PositiveIntSchema.optional(),
   max_project_brief_doc_bytes: PositiveIntSchema.optional(),
+  max_decision_log_source_bytes: PositiveIntSchema.optional(),
+  max_decision_log_sources: PositiveIntSchema.optional(),
+  max_change_plan_files: PositiveIntSchema.optional(),
+  max_change_plan_tree_pages: PositiveIntSchema.optional(),
   max_depth: PositiveIntSchema.optional(),
   max_diff_bytes: PositiveIntSchema.optional()
 }).passthrough();

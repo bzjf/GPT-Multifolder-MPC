@@ -29,7 +29,7 @@ import { WritePolicy } from "../services/write-policy.js";
 import { OperationReceiptService } from "../services/operation-receipt-service.js";
 import { createErrorEnvelope, createSuccessEnvelope } from "../runtime/result-envelope.js";
 import { toRepoReaderError } from "../runtime/errors.js";
-import { audit } from "../runtime/telemetry.js";
+import { audit, type AuditDetailValue } from "../runtime/telemetry.js";
 import type { RuntimeContext } from "../runtime/context.js";
 import { invalidateRepoCaches } from "../runtime/repo-cache.js";
 import type { SearchOptions } from "../services/search-service.js";
@@ -113,7 +113,7 @@ export const codexReadSkillHandler: ToolHandler = async (input, context) => safe
 export const treeHandler: ToolHandler = async (input, context) => safeTool<TreeOptions & RepoInput>("repo_tree", input, context, async (args) => {
   const repo = context.registry.get(args.repo_id);
   const sandbox = new PathSandbox(repo.root);
-  const result = await new RepoTreeService(repo.root, sandbox).tree(args);
+  const result = await new RepoTreeService(repo.root, sandbox, context.registry.limits).tree(args);
   audit({ tool: "repo_tree", repo_id: args.repo_id, counts: { entries: result.entries.length }, truncated: result.truncated });
   return createSuccessEnvelope(result, `Returned ${result.entries.length} tree entries.`);
 });
@@ -121,7 +121,7 @@ export const treeHandler: ToolHandler = async (input, context) => safeTool<TreeO
 export const searchHandler: ToolHandler = async (input, context) => safeTool<SearchOptions & RepoInput>("repo_search", input, context, async (args) => {
   const repo = context.registry.get(args.repo_id);
   const sandbox = new PathSandbox(repo.root);
-  const result = await new SearchService(repo.root, sandbox).search(args);
+  const result = await new SearchService(repo.root, sandbox, context.registry.limits).search(args);
   audit({ tool: "repo_search", repo_id: args.repo_id, counts: { results: result.returned_count }, truncated: result.truncated, warnings: result.warnings });
   return createSuccessEnvelope(result, `Returned ${result.returned_count} search results.`, { warnings: result.warnings });
 });
@@ -148,7 +148,22 @@ export const fetchFileHandler: ToolHandler = async (input, context) => safeTool<
     context.registry.limits.max_bytes_per_file,
     context.registry.limits.max_line_scan_bytes
   ).read(args);
-  audit({ tool: "repo_fetch_file", repo_id: args.repo_id, paths: [result.path], counts: { bytes: result.returned_bytes }, truncated: result.truncated, warnings: result.warnings });
+  audit({
+    tool: "repo_fetch_file",
+    repo_id: args.repo_id,
+    paths: [result.path],
+    counts: { bytes: result.returned_bytes },
+    truncated: result.truncated,
+    warnings: result.warnings,
+    details: compactAuditDetails({
+      ...(toolInputAuditDetails("repo_fetch_file", args) ?? {}),
+      read_mode: result.mode,
+      returned_start_line: result.start_line,
+      returned_end_line: result.end_line,
+      returned_byte_start: result.byte_start,
+      returned_byte_end: result.byte_end
+    })
+  });
   return createSuccessEnvelope(
     result,
     result.truncated ? `Read a bounded chunk of ${result.path}; continue with next_cursor.` : `Read ${result.path}.`,
@@ -188,14 +203,14 @@ export const gitStatusHandler: ToolHandler = async (input, context) => safeTool<
 
 export const gitDiffHandler: ToolHandler = async (input, context) => safeTool<GitDiffInput>("repo_git_diff", input, context, async (args) => {
   const repo = context.registry.get(args.repo_id);
-  const result = await new GitService(repo.root).diff(args);
+  const result = await new GitService(repo.root, undefined, context.registry.limits).diff(args);
   audit({ tool: "repo_git_diff", repo_id: args.repo_id, paths: args.paths, counts: { files: result.files.length }, truncated: result.truncated, warnings: result.warnings });
   return createSuccessEnvelope(result, `Returned diff for ${result.files.length} files.`);
 });
 
 export const gitReviewHandler: ToolHandler = async (input, context) => safeTool<GitReviewInput>("repo_git_review", input, context, async (args) => {
   const repo = context.registry.get(args.repo_id);
-  const result = await new GitReviewService(repo.root, new OperationsPolicy(repo.operations)).review(args);
+  const result = await new GitReviewService(repo.root, new OperationsPolicy(repo.operations), new GitService(repo.root, undefined, context.registry.limits)).review(args);
   audit({ tool: "repo_git_review", repo_id: args.repo_id, counts: { changed: result.changed_paths.length, recommended: result.recommendation.recommended_stage_paths.length }, truncated: result.diff_summary.truncated, warnings: result.recommendation.warnings });
   return createSuccessEnvelope(result, result.clean ? "Repository is clean." : `Reviewed ${result.changed_paths.length} changed paths.`);
 });
@@ -285,7 +300,7 @@ export const cleanupPathsHandler: ToolHandler = async (input, context) => safeTo
 export const projectBriefHandler: ToolHandler = async (input, context) => safeTool<ProjectBriefInput>("repo_project_brief", input, context, async (args) => {
   const repo = context.registry.get(args.repo_id);
   const sandbox = new PathSandbox(repo.root);
-  const result = await new ProjectBriefService(repo, sandbox).brief(args);
+  const result = await new ProjectBriefService(repo, sandbox, context.registry.limits).brief(args);
   audit({ tool: "repo_project_brief", repo_id: args.repo_id, counts: { docs: result.key_docs.length, scripts: result.scripts.length }, truncated: result.truncated, warnings: result.warnings });
   return createSuccessEnvelope(result, `Returned project brief for ${repo.display_name}.`);
 });
@@ -293,7 +308,7 @@ export const projectBriefHandler: ToolHandler = async (input, context) => safeTo
 export const taskInventoryHandler: ToolHandler = async (input, context) => safeTool<TaskInventoryInput>("repo_task_inventory", input, context, async (args) => {
   const repo = context.registry.get(args.repo_id);
   const sandbox = new PathSandbox(repo.root);
-  const result = await new TaskInventoryService(repo.root, sandbox).inventory(args);
+  const result = await new TaskInventoryService(repo.root, sandbox, context.registry.limits).inventory(args);
   audit({ tool: "repo_task_inventory", repo_id: args.repo_id, counts: { tasks: result.returned_count }, truncated: result.truncated, warnings: result.warnings });
   return createSuccessEnvelope(result, `Returned ${result.returned_count} task inventory items.`);
 });
@@ -301,7 +316,7 @@ export const taskInventoryHandler: ToolHandler = async (input, context) => safeT
 export const decisionMemoryHandler: ToolHandler = async (input, context) => safeTool<DecisionLogInput>("repo_decision_memory", input, context, async (args) => {
   const repo = context.registry.get(args.repo_id);
   const sandbox = new PathSandbox(repo.root);
-  const result = await new DecisionLogService(repo.root, sandbox).decisionLog({
+  const result = await new DecisionLogService(repo.root, sandbox, context.registry.limits).decisionLog({
     include_sources: args.include_sources
   });
   audit({ tool: "repo_decision_memory", repo_id: args.repo_id, counts: { decisions: result.decisions.length, conventions: result.conventions.length }, warnings: result.warnings });
@@ -311,7 +326,7 @@ export const decisionMemoryHandler: ToolHandler = async (input, context) => safe
 export const changePlanHandler: ToolHandler = async (input, context) => safeTool<ChangePlanInput>("repo_change_plan", input, context, async (args) => {
   const repo = context.registry.get(args.repo_id);
   const sandbox = new PathSandbox(repo.root);
-  const result = await new ChangePlanService(repo.root, sandbox).plan({
+  const result = await new ChangePlanService(repo.root, sandbox, context.registry.limits).plan({
     goal: args.goal,
     include_globs: args.include_globs,
     max_files_to_inspect: args.max_files_to_inspect,
@@ -324,7 +339,7 @@ export const changePlanHandler: ToolHandler = async (input, context) => safeTool
 export const nextActionHandler: ToolHandler = async (input, context) => safeTool<NextActionInput>("repo_next_action", input, context, async (args) => {
   const repo = context.registry.get(args.repo_id);
   const sandbox = new PathSandbox(repo.root);
-  const result = await new NextActionService(repo, sandbox).recommend({
+  const result = await new NextActionService(repo, sandbox, context.registry.limits).recommend({
     mode: args.mode,
     horizon: args.horizon
   });
@@ -361,7 +376,8 @@ export const codexReviewHandler: ToolHandler = async (input, context) => safeToo
   const repo = context.registry.get(args.repo_id);
   const result = await new CodexResultService(
     new PathSandbox(repo.root),
-    new GitReviewService(repo.root, new OperationsPolicy(repo.operations), undefined, "commit_plan")
+    new GitReviewService(repo.root, new OperationsPolicy(repo.operations), new GitService(repo.root, undefined, context.registry.limits), "commit_plan"),
+    context.registry.limits
   ).review(args);
   audit({
     tool: "repo_codex_review",
@@ -405,10 +421,10 @@ export const writeFileHandler: ToolHandler = async (input, context) => safeTool<
       warnings: [...result.warnings, ...receipt.warnings],
       ...(receipt.operation_receipt ? { operation_receipt: receipt.operation_receipt } : {})
     };
-    audit({ tool: "repo_write_file", repo_id: args.repo_id, paths: [resultWithReceipt.path], counts: { bytes: resultWithReceipt.bytes_written }, warnings: resultWithReceipt.warnings });
+    audit({ tool: "repo_write_file", repo_id: args.repo_id, paths: [resultWithReceipt.path], counts: { bytes: resultWithReceipt.bytes_written }, warnings: resultWithReceipt.warnings, details: toolInputAuditDetails("repo_write_file", args) });
     return createSuccessEnvelope(resultWithReceipt, resultWithReceipt.dry_run ? `Dry run checked write to ${resultWithReceipt.path}.` : `Wrote ${resultWithReceipt.path}.`, { warnings: resultWithReceipt.warnings });
   }
-  audit({ tool: "repo_write_file", repo_id: args.repo_id, paths: [result.path], counts: { bytes: result.bytes_written }, warnings: result.warnings });
+  audit({ tool: "repo_write_file", repo_id: args.repo_id, paths: [result.path], counts: { bytes: result.bytes_written }, warnings: result.warnings, details: toolInputAuditDetails("repo_write_file", args) });
   return createSuccessEnvelope(result, result.dry_run ? `Dry run checked write to ${result.path}.` : `Wrote ${result.path}.`, { warnings: result.warnings });
 });
 
@@ -435,10 +451,10 @@ export const writeChangesHandler: ToolHandler = async (input, context) => safeTo
       warnings: [...result.warnings, ...receipt.warnings],
       ...(receipt.operation_receipt ? { operation_receipt: receipt.operation_receipt } : {})
     };
-    audit({ tool: "repo_write_changes", repo_id: args.repo_id, paths: resultWithReceipt.changed_paths, counts: resultWithReceipt.counts, warnings: resultWithReceipt.warnings });
+    audit({ tool: "repo_write_changes", repo_id: args.repo_id, paths: resultWithReceipt.changed_paths, counts: resultWithReceipt.counts, warnings: resultWithReceipt.warnings, details: toolInputAuditDetails("repo_write_changes", args) });
     return createSuccessEnvelope(resultWithReceipt, resultWithReceipt.dry_run ? `Dry run checked ${resultWithReceipt.files.length} changes.` : resultWithReceipt.summary, { warnings: resultWithReceipt.warnings });
   }
-  audit({ tool: "repo_write_changes", repo_id: args.repo_id, paths: result.changed_paths, counts: result.counts, warnings: result.warnings });
+  audit({ tool: "repo_write_changes", repo_id: args.repo_id, paths: result.changed_paths, counts: result.counts, warnings: result.warnings, details: toolInputAuditDetails("repo_write_changes", args) });
   return createSuccessEnvelope(result, result.dry_run ? `Dry run checked ${result.files.length} changes.` : result.summary, { warnings: result.warnings });
 });
 
@@ -473,9 +489,118 @@ async function safeTool<TInput extends Record<string, unknown>>(
   try {
     return await run(input as TInput);
   } catch (error) {
-    audit({ tool, repo_id: typeof input === "object" && input && "repo_id" in input ? String(input.repo_id) : undefined, warnings: [toRepoReaderError(error).code] });
+    audit({
+      tool,
+      repo_id: typeof input === "object" && input && "repo_id" in input ? String(input.repo_id) : undefined,
+      warnings: [toRepoReaderError(error).code],
+      details: toolInputAuditDetails(tool, input)
+    });
     return createErrorEnvelope(toRepoReaderError(error));
   }
+}
+
+const LINE_WRITE_ACTIONS = new Set(["replace_lines", "insert_before_line", "insert_after_line"]);
+
+function compactAuditDetails(
+  details: Record<string, AuditDetailValue | undefined>
+): Record<string, AuditDetailValue> | undefined {
+  const compact: Record<string, AuditDetailValue> = {};
+  for (const [key, value] of Object.entries(details)) {
+    if (value !== undefined) {
+      compact[key] = value;
+    }
+  }
+  return Object.keys(compact).length > 0 ? compact : undefined;
+}
+
+function toolInputAuditDetails(tool: string, input: unknown): Record<string, AuditDetailValue> | undefined {
+  if (!isRecord(input)) {
+    return undefined;
+  }
+  if (tool === "repo_fetch_file") {
+    const cursorUsed = typeof input.cursor === "string" && input.cursor.length > 0;
+    const hasLineSelector = typeof input.start_line === "number" || typeof input.end_line === "number";
+    return compactAuditDetails({
+      selector_mode: cursorUsed ? "cursor" : hasLineSelector ? "lines" : "bytes",
+      cursor_used: cursorUsed,
+      requested_start_line: finiteNumber(input.start_line),
+      requested_end_line: finiteNumber(input.end_line),
+      requested_byte_offset: finiteNumber(input.byte_offset),
+      max_bytes: finiteNumber(input.max_bytes),
+      override_default_excludes: typeof input.override_default_excludes === "boolean" ? input.override_default_excludes : undefined
+    });
+  }
+  if (tool === "repo_write_file") {
+    const action = typeof input.action === "string" ? input.action : "write";
+    return compactAuditDetails({
+      action,
+      line_operation: LINE_WRITE_ACTIONS.has(action),
+      requested_start_line: finiteNumber(input.start_line),
+      requested_end_line: finiteNumber(input.end_line),
+      dry_run: typeof input.dry_run === "boolean" ? input.dry_run : false
+    });
+  }
+  if (tool === "repo_write_changes") {
+    return summarizeWriteChangesAudit(input);
+  }
+  return undefined;
+}
+
+function summarizeWriteChangesAudit(input: Record<string, unknown>): Record<string, AuditDetailValue> | undefined {
+  const changes = Array.isArray(input.changes) ? input.changes : [];
+  const operationTypes: string[] = [];
+  const lineRanges: string[] = [];
+  let lineOperationCount = 0;
+
+  for (const change of changes) {
+    if (!isRecord(change)) {
+      continue;
+    }
+    if (change.type === "edit" && Array.isArray(change.edits)) {
+      for (const edit of change.edits) {
+        if (!isRecord(edit) || typeof edit.type !== "string") {
+          continue;
+        }
+        operationTypes.push(edit.type);
+        if (LINE_WRITE_ACTIONS.has(edit.type)) {
+          lineOperationCount += 1;
+          lineRanges.push(formatLineRange(edit.type, edit.start_line, edit.end_line));
+        }
+      }
+      continue;
+    }
+    if (typeof change.type !== "string") {
+      continue;
+    }
+    operationTypes.push(change.type);
+    if (LINE_WRITE_ACTIONS.has(change.type)) {
+      lineOperationCount += 1;
+      lineRanges.push(formatLineRange(change.type, change.start_line, change.end_line));
+    }
+  }
+
+  return compactAuditDetails({
+    change_count: changes.length,
+    operation_count: operationTypes.length,
+    operation_types: operationTypes,
+    line_operation_count: lineOperationCount,
+    line_ranges: lineRanges,
+    dry_run: typeof input.dry_run === "boolean" ? input.dry_run : false
+  });
+}
+
+function formatLineRange(type: string, startLine: unknown, endLine: unknown): string {
+  const start = finiteNumber(startLine);
+  const end = finiteNumber(endLine) ?? start;
+  return start === undefined ? type : `${type}@${start}-${end}`;
+}
+
+function finiteNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 async function readHeadSha(root: string): Promise<string | undefined> {

@@ -1,9 +1,10 @@
-import { RootRegistry } from "./root-registry.js";
+import type { RootRegistry } from "./root-registry.js";
 import { PathSandbox } from "./path-sandbox.js";
 import { FileReader } from "./file-reader.js";
 import { RepoTreeService } from "./repo-tree-service.js";
 import { isExcludedByGlob, matchesGlob } from "./glob-service.js";
 import { RepoReaderError, toRepoReaderError } from "../runtime/errors.js";
+import { resolveRuntimeLimits, type RuntimeLimits } from "../policies/limits.js";
 
 export type ReadManyOptions = {
   paths?: string[];
@@ -25,11 +26,15 @@ export type ReadManyResult = {
 };
 
 export class ReadManyService {
+  private readonly limits: RuntimeLimits;
+
   constructor(
     private readonly root: string,
     private readonly sandbox: PathSandbox,
-    private readonly limits: RootRegistry["limits"]
-  ) {}
+    limits: Partial<RuntimeLimits> | RootRegistry["limits"]
+  ) {
+    this.limits = resolveRuntimeLimits(limits);
+  }
 
   async readMany(options: ReadManyOptions): Promise<ReadManyResult> {
     if ((options.paths?.length ?? 0) === 0 && (options.include_globs?.length ?? 0) === 0) {
@@ -97,7 +102,7 @@ export class ReadManyService {
   private async expandPaths(options: ReadManyOptions): Promise<string[]> {
     const explicitPaths = options.paths ?? [];
     const tree = options.include_globs?.length
-      ? await new RepoTreeService(this.root, this.sandbox).tree({ include_files: true, respect_default_excludes: true })
+      ? await new RepoTreeService(this.root, this.sandbox, this.limits).tree({ include_files: true, respect_default_excludes: true })
       : { entries: [] };
     const globPaths = (options.include_globs ?? []).flatMap((glob) =>
       tree.entries

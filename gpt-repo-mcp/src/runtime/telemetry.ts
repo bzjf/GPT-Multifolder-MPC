@@ -11,6 +11,8 @@ export type RequestTelemetryContext = {
   mcp_tool?: string;
 };
 
+export type AuditDetailValue = string | number | boolean | string[] | number[];
+
 export type AuditEvent = {
   tool: string;
   repo_id?: string;
@@ -22,6 +24,7 @@ export type AuditEvent = {
   request_id?: string;
   mcp_method?: string;
   mcp_tool?: string;
+  details?: Record<string, AuditDetailValue>;
 };
 
 export type RequestAuditEvent = {
@@ -38,6 +41,8 @@ export type RequestAuditEvent = {
 
 const requestTelemetry = new AsyncLocalStorage<RequestTelemetryContext>();
 const AUDIT_LABEL_MAX_LENGTH = 128;
+const AUDIT_DETAIL_MAX_LENGTH = 256;
+const AUDIT_DETAIL_ARRAY_MAX_ITEMS = 64;
 const REQUEST_ID_PRETTY_LENGTH = 8;
 
 type LogFormat = "json" | "pretty";
@@ -156,7 +161,8 @@ export function createAuditEvent(event: AuditEvent): AuditEvent {
     mcp_tool: sanitizeAuditLabel(event.mcp_tool ?? context?.mcp_tool),
     paths: event.paths?.map((path) => redactSensitiveText(path)),
     globs: event.globs?.map((glob) => redactSensitiveText(glob)),
-    warnings: event.warnings?.map((warning) => redactSensitiveText(warning))
+    warnings: event.warnings?.map((warning) => redactSensitiveText(warning)),
+    details: sanitizeAuditDetails(event.details)
   };
   return withoutUndefinedAuditFields(safe);
 }
@@ -191,6 +197,29 @@ export function requestAudit(event: RequestAuditEvent): void {
     return;
   }
   console.error(JSON.stringify({ level: "audit", ...safe }));
+}
+
+function sanitizeAuditDetails(details: Record<string, AuditDetailValue> | undefined): Record<string, AuditDetailValue> | undefined {
+  if (!details) {
+    return undefined;
+  }
+  const safe: Record<string, AuditDetailValue> = {};
+  for (const [key, value] of Object.entries(details)) {
+    if (typeof value === "string") {
+      safe[key] = redactSensitiveText(value).slice(0, AUDIT_DETAIL_MAX_LENGTH);
+      continue;
+    }
+    if (Array.isArray(value)) {
+      safe[key] = value.every((item) => typeof item === "number")
+        ? value.slice(0, AUDIT_DETAIL_ARRAY_MAX_ITEMS)
+        : (value as string[])
+          .slice(0, AUDIT_DETAIL_ARRAY_MAX_ITEMS)
+          .map((item) => redactSensitiveText(item).slice(0, AUDIT_DETAIL_MAX_LENGTH));
+      continue;
+    }
+    safe[key] = value;
+  }
+  return safe;
 }
 
 function withoutUndefinedAuditFields(event: AuditEvent): AuditEvent {

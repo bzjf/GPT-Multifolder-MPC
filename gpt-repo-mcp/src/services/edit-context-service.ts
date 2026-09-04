@@ -1,4 +1,3 @@
-import { DEFAULT_LIMITS } from "../policies/limits.js";
 import type { EditContextInput } from "../contracts/edit-context.contract.js";
 import type { RootRegistry } from "./root-registry.js";
 import { GitService } from "./git-service.js";
@@ -36,7 +35,7 @@ export class EditContextService {
       addCandidate(candidateMap, path, "known_path", []);
     }
 
-    const searchService = new SearchService(this.root, this.sandbox);
+    const searchService = new SearchService(this.root, this.sandbox, this.limits);
     for (const query of searchQueries) {
       const result = await searchService.search({
         query,
@@ -53,7 +52,7 @@ export class EditContextService {
     }
 
     const candidatePaths = [...candidateMap.keys()].slice(0, maxFiles);
-    const readOptions = buildReadOptions(options, candidatePaths, maxFiles);
+    const readOptions = buildReadOptions(options, candidatePaths, maxFiles, this.limits);
     const readResult = readOptions
       ? await new ReadManyService(this.root, this.sandbox, this.limits).readMany(readOptions)
       : emptyReadMany();
@@ -96,12 +95,13 @@ export class EditContextService {
 function buildReadOptions(
   options: EditContextInput,
   candidatePaths: string[],
-  maxFiles: number
+  maxFiles: number,
+  limits: RootRegistry["limits"]
 ): ReadManyOptions | undefined {
   const budgets = {
     max_files: maxFiles,
-    max_bytes_per_file: options.max_bytes_per_file ?? DEFAULT_LIMITS.max_bytes_per_file,
-    max_total_bytes: options.max_total_bytes ?? Math.min(DEFAULT_LIMITS.max_total_bytes, 256_000)
+    max_bytes_per_file: options.max_bytes_per_file ?? limits.max_bytes_per_file,
+    max_total_bytes: options.max_total_bytes ?? Math.min(limits.max_total_bytes, 256_000)
   };
 
   if (candidatePaths.length > 0) {

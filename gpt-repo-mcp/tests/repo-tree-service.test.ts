@@ -6,6 +6,7 @@ import { RepoTreeService } from "../src/services/repo-tree-service.js";
 import { FileWriter } from "../src/services/file-writer.js";
 import { WritePolicy } from "../src/services/write-policy.js";
 import { createRepoFixture } from "./fixtures/repo-fixture.js";
+import { DEFAULT_LIMITS } from "../src/policies/limits.js";
 
 describe("RepoTreeService", () => {
   test("returns structure without file contents and summarizes default excludes", async () => {
@@ -129,5 +130,22 @@ describe("RepoTreeService", () => {
     expect(result.truncated).toBe(true);
     expect(result.next_cursor).toBe("4");
     expect(result.scan_complete).toBe(false);
+  });
+  test("clamps tree size and depth to runtime limits", async () => {
+    const fixture = await createRepoFixture();
+    const sandbox = new PathSandbox(fixture.root);
+    const result = await new RepoTreeService(fixture.root, sandbox, {
+      ...DEFAULT_LIMITS,
+      max_tree_entries: 2,
+      max_depth: 1
+    }).tree({
+      include_files: true,
+      page_size: 10,
+      max_depth: 10
+    });
+
+    expect(result.entries).toHaveLength(2);
+    expect(result.truncated).toBe(true);
+    expect(result.entries.some((entry) => entry.path === "src/app.ts")).toBe(false);
   });
 });

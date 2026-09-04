@@ -479,6 +479,11 @@ describe("tool catalog contracts", () => {
     expect(parsed.error?.issues).toBeUndefined();
   });
 
+  test("repo_write_changes schema tells callers to group repeated target paths", () => {
+    expect(schemaDescription(WriteChangesInputSchema.shape.changes)).toContain("Each repo-relative target path may appear at most once");
+    expect(schemaDescription(WriteChangesInputSchema.shape.changes)).toContain("one type=edit change with an ordered edits array");
+  });
+
   test("repo_write_changes schema accepts line-number edits", () => {
     const parsed = WriteChangesInputSchema.safeParse({
       repo_id: "fixture",

@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { isAbsolute, join, posix } from "node:path";
 import { DEFAULT_EXCLUDES } from "../policies/default-excludes.js";
-import { DEFAULT_LIMITS } from "../policies/limits.js";
+import { DEFAULT_LIMITS, type RuntimeLimits } from "../policies/limits.js";
 import { RepoReaderError } from "../runtime/errors.js";
 import { getRepoCacheGeneration } from "../runtime/repo-cache.js";
 import { FileClassifier } from "./file-classifier.js";
@@ -65,11 +65,11 @@ export class SearchService {
   private readonly classifier = new FileClassifier(this.ignoreEngine);
   private readonly fastPathEligibility = new Map<string, boolean>();
 
-  constructor(private readonly root: string, private readonly sandbox: PathSandbox) {}
+  constructor(private readonly root: string, private readonly sandbox: PathSandbox, private readonly limits: RuntimeLimits = DEFAULT_LIMITS) {}
 
   async search(options: SearchOptions): Promise<SearchResponse> {
     const matcher = createMatcher(options);
-    const maxResults = Math.min(options.max_results ?? DEFAULT_LIMITS.max_search_results, DEFAULT_LIMITS.max_search_results);
+    const maxResults = Math.min(options.max_results ?? this.limits.max_search_results, this.limits.max_search_results);
     const contextLines = Math.min(options.context_lines ?? 0, 5);
     const start = parseCursor(options.cursor);
     const stopAfter = start + maxResults + 1;
@@ -206,7 +206,7 @@ export class SearchService {
     stopAfter: number,
     fallbackWarning?: string
   ): Promise<BackendScan> {
-    const treeService = new RepoTreeService(this.root, this.sandbox);
+    const treeService = new RepoTreeService(this.root, this.sandbox, this.limits);
     const matches: SearchMatch[] = [];
     let treeCursor: string | undefined;
     let scanComplete = true;

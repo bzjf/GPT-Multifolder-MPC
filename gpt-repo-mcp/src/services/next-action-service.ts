@@ -4,6 +4,7 @@ import { GitService } from "./git-service.js";
 import { ProjectBriefService } from "./project-brief-service.js";
 import { TaskInventoryService } from "./task-inventory-service.js";
 import type { NextActionInput, NextActionMode } from "../contracts/next-action.contract.js";
+import { DEFAULT_LIMITS, type RuntimeLimits } from "../policies/limits.js";
 
 type NextActionOptions = Omit<NextActionInput, "repo_id">;
 type SuggestedAction = {
@@ -14,14 +15,14 @@ type SuggestedAction = {
 };
 
 export class NextActionService {
-  constructor(private readonly repo: RepoConfig, private readonly sandbox: PathSandbox) {}
+  constructor(private readonly repo: RepoConfig, private readonly sandbox: PathSandbox, private readonly limits: RuntimeLimits = DEFAULT_LIMITS) {}
 
   async recommend(options: NextActionOptions = {}) {
     const mode = options.mode ?? "plan";
     const warnings: string[] = [];
     const [projectBrief, taskInventory, gitStatus] = await Promise.all([
-      new ProjectBriefService(this.repo, this.sandbox).brief({ include: ["package", "readme", "scripts", "todos"] }),
-      new TaskInventoryService(this.repo.root, this.sandbox).inventory({ max_results: 10 }),
+      new ProjectBriefService(this.repo, this.sandbox, this.limits).brief({ include: ["package", "readme", "scripts", "todos"] }),
+      new TaskInventoryService(this.repo.root, this.sandbox, this.limits).inventory({ max_results: 10 }),
       readGitStatus(this.repo.root, warnings)
     ]);
     warnings.push(...projectBrief.warnings, ...taskInventory.warnings);

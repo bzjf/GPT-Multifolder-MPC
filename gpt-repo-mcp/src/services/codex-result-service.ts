@@ -1,5 +1,5 @@
 import { CodexReviewInputSchema, type CodexParsedResult, type CodexReviewInput, type CodexReviewResult } from "../contracts/codex-task.contract.js";
-import { DEFAULT_LIMITS } from "../policies/limits.js";
+import { DEFAULT_LIMITS, type RuntimeLimits } from "../policies/limits.js";
 import { RepoReaderError } from "../runtime/errors.js";
 import { readFilePrefix } from "./bounded-read.js";
 import type { GitReviewService } from "./git-review-service.js";
@@ -12,7 +12,8 @@ export class CodexResultService {
 
   constructor(
     private readonly sandbox: PathSandbox,
-    private readonly gitReviewService: GitReviewService
+    private readonly gitReviewService: GitReviewService,
+    private readonly limits: RuntimeLimits = DEFAULT_LIMITS
   ) {}
 
   async review(rawInput: CodexReviewInput): Promise<CodexReviewResult> {
@@ -24,7 +25,7 @@ export class CodexResultService {
       if (!resolved.stat.isFile()) {
         throw new RepoReaderError("UNSUPPORTED_FILE_TYPE", `Not a regular file: ${resolved.repoPath}`);
       }
-      const { buffer, truncated } = await readFilePrefix(resolved.absolutePath, DEFAULT_LIMITS.max_bytes_per_file);
+      const { buffer, truncated } = await readFilePrefix(resolved.absolutePath, this.limits.max_bytes_per_file);
       if (truncated) {
         throw new RepoReaderError("SIZE_LIMIT_EXCEEDED", `File exceeds max_bytes: ${resolved.repoPath}`);
       }

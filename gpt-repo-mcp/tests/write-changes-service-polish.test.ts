@@ -30,7 +30,10 @@ describe("WriteChangesService polish", () => {
         { type: "write", path: "docs/guide.md", content: "# Updated\n" },
         { type: "append", path: "./docs/guide.md", content: "More\n" }
       ]
-    })).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
+    })).rejects.toMatchObject({
+      code: "VALIDATION_ERROR",
+      message: expect.stringContaining("combine multiple edits to the same file into one type=edit change")
+    });
   });
 });
 

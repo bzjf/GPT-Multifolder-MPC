@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { DEFAULT_LIMITS } from "../policies/limits.js";
+import { DEFAULT_LIMITS, type RuntimeLimits } from "../policies/limits.js";
 import { RepoReaderError } from "../runtime/errors.js";
 import { validateRepoPath } from "./path-sandbox.js";
 
@@ -11,7 +11,7 @@ export type GitCommandRunner = (args: string[], maxBuffer?: number) => Promise<s
 export class GitService {
   private readonly runCommand: GitCommandRunner;
 
-  constructor(private readonly root: string, runCommand?: GitCommandRunner) {
+  constructor(private readonly root: string, runCommand?: GitCommandRunner, private readonly limits: RuntimeLimits = DEFAULT_LIMITS) {
     this.runCommand = runCommand ?? ((args, maxBuffer) => this.runGitProcess(args, maxBuffer));
   }
 
@@ -63,8 +63,8 @@ export class GitService {
     }
     if (paths?.length) args.push("--", ...paths);
 
-    const maxBytes = Math.min(options.max_bytes ?? DEFAULT_LIMITS.max_diff_bytes, DEFAULT_LIMITS.max_diff_bytes);
-    const raw = await this.runCommand(args, DEFAULT_LIMITS.max_diff_bytes + 1);
+    const maxBytes = Math.min(options.max_bytes ?? this.limits.max_diff_bytes, this.limits.max_diff_bytes);
+    const raw = await this.runCommand(args, this.limits.max_diff_bytes + 1);
     const truncated = Buffer.byteLength(raw) > maxBytes;
     const text = truncated ? raw.slice(0, maxBytes) : raw;
     return {
@@ -80,11 +80,11 @@ export class GitService {
     };
   }
 
-  private async runGitProcess(args: string[], maxBuffer: number = DEFAULT_LIMITS.max_diff_bytes): Promise<string> {
+  private async runGitProcess(args: string[], maxBuffer?: number): Promise<string> {
     try {
       const result = await execFileAsync("git", args, {
         cwd: this.root,
-        maxBuffer,
+        maxBuffer: maxBuffer ?? this.limits.max_diff_bytes,
         env: { PATH: process.env.PATH ?? "" }
       });
       return result.stdout;

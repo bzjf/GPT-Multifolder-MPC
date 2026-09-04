@@ -1,4 +1,4 @@
-import { DEFAULT_LIMITS } from "../policies/limits.js";
+import { DEFAULT_LIMITS, type RuntimeLimits } from "../policies/limits.js";
 import { FileClassifier } from "./file-classifier.js";
 import { isExcludedByGlob, matchesGlob } from "./glob-service.js";
 import { IgnoreEngine } from "./ignore-engine.js";
@@ -23,24 +23,24 @@ export class TaskInventoryService {
   private readonly ignoreEngine = new IgnoreEngine();
   private readonly classifier = new FileClassifier(this.ignoreEngine);
 
-  constructor(private readonly root: string, private readonly sandbox: PathSandbox) {}
+  constructor(private readonly root: string, private readonly sandbox: PathSandbox, private readonly limits: RuntimeLimits = DEFAULT_LIMITS) {}
 
   async inventory(options: TaskInventoryOptions = {}) {
-    const maxResults = Math.min(options.max_results ?? DEFAULT_LIMITS.max_search_results, DEFAULT_LIMITS.max_search_results);
+    const maxResults = Math.min(options.max_results ?? this.limits.max_search_results, this.limits.max_search_results);
     const labels = new Set(options.labels ?? DEFAULT_LABELS);
     const start = parseCursor(options.cursor);
     const warnings: string[] = [];
-    const treeService = new RepoTreeService(this.root, this.sandbox);
+    const treeService = new RepoTreeService(this.root, this.sandbox, this.limits);
     const tasks: TaskInventoryItem[] = [];
     let scannedFileCount = 0;
     let scanComplete = true;
     let treeCursor: string | undefined;
     let treePages = 0;
 
-    while (treePages < DEFAULT_LIMITS.max_task_inventory_tree_pages && scannedFileCount < DEFAULT_LIMITS.max_task_inventory_files) {
+    while (treePages < this.limits.max_task_inventory_tree_pages && scannedFileCount < this.limits.max_task_inventory_files) {
       const tree = await treeService.tree({
         include_files: true,
-        page_size: DEFAULT_LIMITS.max_tree_entries,
+        page_size: this.limits.max_tree_entries,
         respect_default_excludes: true,
         cursor: treeCursor
       });
@@ -56,7 +56,7 @@ export class TaskInventoryService {
         if (this.ignoreEngine.isSensitiveCandidate(entry.path)) {
           continue;
         }
-        if (scannedFileCount >= DEFAULT_LIMITS.max_task_inventory_files) {
+        if (scannedFileCount >= this.limits.max_task_inventory_files) {
           scanComplete = false;
           addWarning(warnings, "SCAN_FILE_LIMIT_REACHED");
           break;
@@ -67,7 +67,7 @@ export class TaskInventoryService {
           continue;
         }
         scannedFileCount += 1;
-        const readResult = await readFilePrefix(resolved.absolutePath, DEFAULT_LIMITS.max_task_inventory_file_bytes);
+        const readResult = await readFilePrefix(resolved.absolutePath, this.limits.max_task_inventory_file_bytes);
         if (readResult.truncated) {
           addWarning(warnings, `FILE_TRUNCATED:${entry.path}`);
         }
@@ -102,9 +102,9 @@ export class TaskInventoryService {
 
     if (treeCursor) {
       scanComplete = false;
-      if (scannedFileCount >= DEFAULT_LIMITS.max_task_inventory_files) {
+      if (scannedFileCount >= this.limits.max_task_inventory_files) {
         addWarning(warnings, "SCAN_FILE_LIMIT_REACHED");
-      } else if (treePages >= DEFAULT_LIMITS.max_task_inventory_tree_pages) {
+      } else if (treePages >= this.limits.max_task_inventory_tree_pages) {
         addWarning(warnings, "SCAN_TREE_PAGE_LIMIT_REACHED");
       } else {
         addWarning(warnings, "TREE_SCAN_INCOMPLETE");

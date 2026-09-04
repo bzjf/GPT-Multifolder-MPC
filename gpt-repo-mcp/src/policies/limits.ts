@@ -16,3 +16,17 @@ export const DEFAULT_LIMITS = {
   max_depth: 8,
   max_diff_bytes: 256_000
 } as const;
+
+export type LimitKey = keyof typeof DEFAULT_LIMITS;
+export type RuntimeLimits = { [Key in LimitKey]: number };
+
+export function resolveRuntimeLimits(configured: Partial<Record<LimitKey, number>> = {}): RuntimeLimits {
+  const resolved = { ...DEFAULT_LIMITS } as RuntimeLimits;
+  for (const key of Object.keys(DEFAULT_LIMITS) as LimitKey[]) {
+    const value = configured[key];
+    if (value !== undefined) {
+      resolved[key] = value;
+    }
+  }
+  return resolved;
+}

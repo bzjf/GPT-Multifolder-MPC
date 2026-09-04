@@ -28,7 +28,7 @@ describe("MCP contract", () => {
       expect(SERVER_INSTRUCTIONS).toContain("Do not call repo_list_roots when a valid repo_id is already known");
       expect(SERVER_INSTRUCTIONS).toContain("codex_list_skills only when a relevant skill is likely to exist");
       expect(SERVER_INSTRUCTIONS).toContain("Use one repo_write_changes call for a cohesive multi-file task");
-      expect(SERVER_INSTRUCTIONS).toContain("group multiple same-file edits into one ordered grouped edit");
+      expect(SERVER_INSTRUCTIONS).toContain("group multiple same-file edits into one ordered type=edit change with an edits array");
       expect(SERVER_INSTRUCTIONS).toContain("prefer one repo_git_review call instead of separate status and diff calls");
       expect(SERVER_INSTRUCTIONS).toContain("mode=commit_plan");
       expect(SERVER_INSTRUCTIONS).toContain("prefer repo_write_stage_commit");
