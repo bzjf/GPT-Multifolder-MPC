@@ -13,7 +13,7 @@ export const SearchInputSchema = RepoInputSchema.extend({
 
 export const SearchResultSchema = z.object({
   path: z.string(),
-  line: z.number().int().positive(),
+  line: z.number().int().positive().describe("Exact 1-based source line; copy this value unchanged into a line-number write action."),
   column: z.number().int().positive(),
   text: z.string(),
   before: z.array(z.string()).default([]),

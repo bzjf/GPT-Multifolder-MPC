@@ -1,9 +1,13 @@
 {
   "repos": [],
   "limits": {
-    "max_files": 50,
-    "max_bytes_per_file": 128000,
-    "max_total_bytes": 750000,
-    "max_line_scan_bytes": 67108864
+    "max_files": 100,
+    "max_bytes_per_file": 256000,
+    "max_total_bytes": 1500000,
+    "max_line_scan_bytes": 134217728,
+    "max_search_results": 250,
+    "max_tree_entries": 5000,
+    "max_depth": 12,
+    "max_diff_bytes": 512000
   }
 }

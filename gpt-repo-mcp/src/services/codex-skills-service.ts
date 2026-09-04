@@ -5,12 +5,12 @@ import { basename, dirname, join, relative, sep } from "node:path";
 import type { CodexReadSkillInput, CodexSkillSource, CodexSkillsInput } from "../contracts/codex-skills.contract.js";
 import { RepoReaderError } from "../runtime/errors.js";
 
-const DEFAULT_MAX_RESULTS = 200;
-const HARD_MAX_RESULTS = 500;
-const MAX_SCAN_DEPTH = 12;
+const DEFAULT_MAX_RESULTS = 400;
+const HARD_MAX_RESULTS = 1_000;
+const MAX_SCAN_DEPTH = 16;
 const FRONTMATTER_CHARS = 16_000;
-const DEFAULT_SKILL_CONTENT_BYTES = 256_000;
-const HARD_SKILL_CONTENT_BYTES = 1_000_000;
+const DEFAULT_SKILL_CONTENT_BYTES = 512_000;
+const HARD_SKILL_CONTENT_BYTES = 2_000_000;
 
 type SkillFile = {
   path: string;

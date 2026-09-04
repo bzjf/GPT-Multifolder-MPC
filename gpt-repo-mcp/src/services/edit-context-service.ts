@@ -22,9 +22,9 @@ export class EditContextService {
   ) {}
 
   async context(options: EditContextInput) {
-    const maxSearchResults = Math.min(options.max_search_results_per_query ?? 8, 20);
-    const maxFiles = Math.min(options.max_files_to_read ?? 8, 20, this.limits.max_files);
-    const contextLines = Math.min(options.context_lines ?? 1, 2);
+    const maxSearchResults = Math.min(options.max_search_results_per_query ?? 16, this.limits.max_search_results);
+    const maxFiles = Math.min(options.max_files_to_read ?? 16, this.limits.max_files);
+    const contextLines = Math.min(options.context_lines ?? 2, 5);
     const searchQueries = normalizeQueries(options.search_queries, options.goal);
     const knownPaths = normalizeKnownPaths(options.known_paths);
     const candidateMap = new Map<string, Candidate>();
@@ -101,7 +101,7 @@ function buildReadOptions(
   const budgets = {
     max_files: maxFiles,
     max_bytes_per_file: options.max_bytes_per_file ?? limits.max_bytes_per_file,
-    max_total_bytes: options.max_total_bytes ?? Math.min(limits.max_total_bytes, 256_000)
+    max_total_bytes: options.max_total_bytes ?? Math.min(limits.max_total_bytes, 1_000_000)
   };
 
   if (candidatePaths.length > 0) {
@@ -149,7 +149,7 @@ function normalizeKnownPaths(paths: string[] = []): string[] {
 
 function normalizeQueries(queries: string[] | undefined, goal: string): string[] {
   const selected = queries && queries.length > 0 ? queries : [goal];
-  return [...new Set(selected.map((query) => query.trim()).filter(Boolean))].slice(0, 5);
+  return [...new Set(selected.map((query) => query.trim()).filter(Boolean))].slice(0, 10);
 }
 
 function emptyReadMany(): ReadManyResult {

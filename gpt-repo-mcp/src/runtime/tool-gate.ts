@@ -33,7 +33,8 @@ export function stripToolGate(input: unknown): unknown {
     return input;
   }
 
-  const { [TOOL_GATE_FIELD]: _ignored, ...rest } = input as Record<string, unknown>;
+  const rest = { ...(input as Record<string, unknown>) };
+  delete rest[TOOL_GATE_FIELD];
   return rest;
 }
 

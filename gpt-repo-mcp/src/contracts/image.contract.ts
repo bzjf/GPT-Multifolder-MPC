@@ -3,7 +3,7 @@ import { RepoInputSchema } from "./repo.contract.js";
 
 export const FetchImageInputSchema = RepoInputSchema.extend({
   path: z.string().min(1).describe("Repo-relative POSIX path to a PNG, JPEG, or WebP image."),
-  max_bytes: z.number().int().positive().optional().describe("Maximum image bytes to return. The server enforces a 5 MiB hard limit."),
+  max_bytes: z.number().int().positive().optional().describe("Maximum image bytes to return. The server enforces a 10 MiB hard limit."),
   override_default_excludes: z.boolean().optional().describe("Read a default-excluded image path when repository read policy allows the override.")
 });
 

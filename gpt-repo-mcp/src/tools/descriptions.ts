@@ -12,11 +12,11 @@ export const descriptions = {
   repo_tree:
     "Use this when the user asks to inspect repository structure or locate likely files by directory. Uses bounded lexicographic pagination and stops scanning after the requested page; excluded_summary is partial while scan_complete is false. Do not use this when the user asks to read file contents.",
   repo_search:
-    "Use this when the user asks to find code, inspect usages, perform a bughunt, or locate relevant files before reading them. Uses a bounded ripgrep fast path when available and a safe TypeScript fallback; matched_count is a lower bound when scan_complete is false. Prefer this before repo_read_many.",
+    "Use this when the user asks to find code, inspect usages, perform a bughunt, or locate relevant files before reading them. Result line values are exact 1-based source coordinates and should be copied unchanged into line-number write actions. Uses a bounded ripgrep fast path when available and a safe TypeScript fallback; matched_count is a lower bound when scan_complete is false. Prefer this before repo_read_many.",
   repo_edit_context:
     "Use this when the user asks to edit, fix, debug, or implement code and likely files are not fully known. Combines bounded search, candidate selection, batched repo_read_many file reads, and git HEAD in one read-only call so the next step can usually be repo_write_changes.",
   repo_fetch_file:
-    "Use this when the user names exactly one specific text file or needs a narrow line/byte page from one file. After search finds multiple likely files, prefer repo_read_many or repo_edit_context instead of repeated repo_fetch_file calls.",
+    "Use this when the user names exactly one specific text file or needs a narrow line/byte page from one file. Returned start_line/end_line are exact 1-based inclusive source coordinates; a trailing newline is not an extra editable line. Copy these coordinates unchanged into line-number write actions. After search finds multiple likely files, prefer repo_read_many or repo_edit_context instead of repeated repo_fetch_file calls.",
   repo_fetch_image:
     "Use this when the user asks to inspect a specific PNG, JPEG, or WebP image inside an approved repository. Returns image content to the client plus safe metadata; does not read arbitrary binary files.",
   repo_read_many:
@@ -66,9 +66,9 @@ export const descriptions = {
   repo_codex_review:
     "Use this when Codex has finished or the user asks to review a repo-local Codex run. Reads .chatgpt/codex-runs/<run_id>/RESULT.md and git diff review state without mutating files or git.",
   repo_write_file:
-    "Use this when the user explicitly asks to write or precisely edit one allowed repository file. Prefer line-number whole-line edits after reading current lines; preserves existing CRLF/LF style for existing-file edits. Requires user approval, repo opt-in, and never runs shell, git, or Codex.",
+    "Use this when the user explicitly asks to write or precisely edit one allowed repository file. For existing text with known current lines, use replace_lines, insert_before_line, or insert_after_line; do not use apply_patch-shaped or exact-text edits. Line coordinates are unchanged 1-based values from read tools and end_line is inclusive. Preserves CRLF/LF style. Requires user approval, repo opt-in, and never runs shell, git, or Codex.",
   repo_write_changes:
-    "Use this when the user explicitly asks to apply a cohesive multi-file edit pack to allowed repository files. Prefer grouped line-number whole-line edits after reading current lines; preserves existing CRLF/LF style for existing-file edits. Requires user approval, repo opt-in, and never runs shell, git, stage, commit, or restore.",
+    "Use this when the user explicitly asks to apply a cohesive multi-file edit pack. Existing text with known lines must use line-number actions, not apply_patch-shaped exact-text edits. Grouped line coordinates all refer to the original pre-edit snapshot; the server applies non-overlapping edits bottom-up. Preserves CRLF/LF style. Requires user approval, repo opt-in, and never runs shell, git, stage, commit, or restore.",
   repo_write_handoff:
     "Use this when the user asks for a local-only ChatGPT handoff: skapa handoff, create handoff, skriv handoff, session handoff, resume note, fortsättningsanteckning, ny chatt context, or överlämning till nästa chatt. Creates .chatgpt/handoffs/*.local.md and updates current.local.md; never stages, commits, pushes, resets, checks out, or runs shell commands."
 } as const;

@@ -1,11 +1,14 @@
 #!/usr/bin/env node
 import http from "node:http";
-import net from "node:net";
 import { spawn, spawnSync } from "node:child_process";
-import { createHash, randomInt } from "node:crypto";
-import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { FunnelController } from "./control-panel/funnel-controller.mjs";
+import { InstanceSupervisor } from "./control-panel/instance-supervisor.mjs";
+import { createPanelServer } from "./control-panel/panel-server.mjs";
+import { controlPanelHtml } from "./control-panel/page.mjs";
+import { PortProcessManager } from "./control-panel/port-process-manager.mjs";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.dirname(scriptDir);
@@ -13,18 +16,36 @@ const mainConfigPath = path.join(rootDir, "gpt-repo-mcp.config.json");
 const runtimeRoot = path.join(rootDir, ".runtime", "control-panel");
 const statePath = path.join(runtimeRoot, "state.json");
 const panelPort = Number(process.env.GPT_REPO_PANEL_PORT ?? 8790);
+const preserveExistingFunnel = process.env.GPT_REPO_PANEL_PRESERVE_FUNNEL === "1";
 let proxyPort = Number(process.env.GPT_REPO_PROXY_PORT ?? 8800);
 const proxyHost = "127.0.0.1";
-let proxyPublicBaseUrl = localProxyBaseUrl();
-let proxyFunnelStarted = false;
 const host = "127.0.0.1";
-const runtime = new Map();
-const nodePortsCacheMs = 3000;
-let nodePortsCache = { at: 0, value: null };
-
-function ensureDir(dir) {
-  mkdirSync(dir, { recursive: true });
-}
+let instanceSupervisor;
+const portProcessManager = new PortProcessManager({
+  getProtectedPorts: () => [panelPort, proxyPort],
+  getSuggestedPorts: () => instanceSupervisor?.configuredPorts() ?? []
+});
+const funnelController = new FunnelController({
+  getProxyPort: () => proxyPort,
+  getHttpsPort: currentProxyHttpsPort,
+  preserveExisting: preserveExistingFunnel
+});
+instanceSupervisor = new InstanceSupervisor({
+  rootDir,
+  scriptDir,
+  runtimeRoot,
+  statePath,
+  loadMainConfig,
+  getProxyState: () => {
+    const funnel = funnelController.snapshot;
+    return {
+      localBaseUrl: funnelController.localBaseUrl,
+      publicBaseUrl: funnel.publicBaseUrl,
+      funnelRunning: funnel.started
+    };
+  },
+  portProcessManager
+});
 
 function readJson(filePath, fallback) {
   if (!existsSync(filePath)) return fallback;
@@ -32,29 +53,9 @@ function readJson(filePath, fallback) {
   return JSON.parse(text);
 }
 
-function writeJson(filePath, value) {
-  ensureDir(path.dirname(filePath));
-  writeFileSync(filePath, JSON.stringify(value, null, 2), "utf8");
-}
-
-function randomText(length = 32) {
-  const chars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
-  let out = "";
-  for (let i = 0; i < length; i += 1) out += chars[randomInt(chars.length)];
-  return out;
-}
-
 function resolveConfigPath(value, fallback = ".") {
   const raw = String(value ?? fallback).trim() || fallback;
   return path.isAbsolute(raw) ? path.normalize(raw) : path.resolve(rootDir, raw);
-}
-
-function normalizeRepoPath(repoPath) {
-  return resolveConfigPath(repoPath).replace(/[\\/]+$/, "").toLowerCase();
-}
-
-function pathKey(repoPath) {
-  return createHash("sha256").update(normalizeRepoPath(repoPath)).digest("hex").slice(0, 16);
 }
 
 function loadMainConfig() {
@@ -66,84 +67,13 @@ function loadMainConfig() {
   return main;
 }
 
-function loadState() {
-  const main = loadMainConfig();
-  const basePort = Number(main.localPort ?? 8787);
-  return readJson(statePath, { nextPort: basePort + 2, instances: [] });
-}
-
-function saveState(state) {
-  writeJson(statePath, state);
-}
-
-function instanceDir(id) {
-  return path.join(runtimeRoot, "instances", id);
-}
-
-function stablePublicCodeFor(repoPath, length) {
-  const normalized = normalizeRepoPath(repoPath);
-  const digest = createHash("sha256").update(`public:${normalized}`).digest("hex");
-  return digest.slice(0, Math.max(16, Number(length) || 32));
-}
-
-function publicCodeFor(repoPath, length) {
-  const key = pathKey(repoPath);
-  const filePath = path.join(runtimeRoot, `public-path-code-${key}.txt`);
-  if (existsSync(filePath)) return readFileSync(filePath, "utf8").trim();
-  const code = stablePublicCodeFor(repoPath, length);
-  writeFileSync(filePath, `${code}\n`, "utf8");
-  return code;
-}
-
-function pickPort(state) {
-  const used = new Set(state.instances.map((item) => Number(item.localPort)));
-  let port = Number(state.nextPort ?? 8788);
-  while (used.has(port)) port += 1;
-  state.nextPort = port + 1;
-  return port;
-}
-
-function instanceView(item) {
-  const live = runtime.get(item.id);
-  const mcpRunning = Boolean(live?.child && !live.child.killed && !live.exited);
-  const funnelEnabled = true;
-  const funnelRunning = proxyFunnelStarted;
-  const available = mcpRunning && funnelRunning;
-  const publicUrl = available && live?.publicCode
-    ? `${proxyPublicBaseUrl}/t/${live.publicCode}/mcp`
-    : null;
-  return {
-    ...item,
-    running: mcpRunning,
-    mcpRunning,
-    funnelEnabled,
-    funnelRunning,
-    available,
-    url: publicUrl,
-    localUrl: mcpRunning ? live?.localUrl ?? null : null,
-    mcp_code: live?.runtimeCode ?? null,
-    logPath: live?.logPath ?? path.join(instanceDir(item.id), "server.log"),
-    lastError: live?.lastError ?? null
-  };
-}
-
-function rememberInstanceError(id, error) {
-  const message = error instanceof Error ? error.message : String(error);
-  const previous = runtime.get(id) ?? {};
-  runtime.set(id, { ...previous, lastError: message });
-  return message;
-}
 function listView() {
-  const state = loadState();
+  const funnel = funnelController.snapshot;
   return {
     panel: { host, port: panelPort, statePath },
-    proxy: { host: proxyHost, port: proxyPort, publicBaseUrl: proxyPublicBaseUrl, funnelStarted: proxyFunnelStarted },
-    instances: state.instances.map(instanceView)
+    proxy: { host: proxyHost, port: proxyPort, publicBaseUrl: funnel.publicBaseUrl, funnelStarted: funnel.started },
+    instances: instanceSupervisor.listInstances()
   };
-}
-
-function localProxyBaseUrl() {
-  return `http://localhost:${proxyPort}`;
 }
 
 function listenOnAvailablePort(serverToListen, initialPort, bindHost, label, maxRetries = 25) {
@@ -188,23 +118,6 @@ function listenOnAvailablePort(serverToListen, initialPort, bindHost, label, max
   });
 }
 
-function assertPortAvailable(port, bindHost, label) {
-  return new Promise((resolve, reject) => {
-    const probe = net.createServer();
-    probe.once("error", (error) => {
-      if (error?.code === "EADDRINUSE") {
-        reject(new Error(`${label} port ${port} is already in use on ${bindHost}. Stop the existing process or choose another local port.`));
-        return;
-      }
-      reject(error);
-    });
-    probe.once("listening", () => {
-      probe.close(() => resolve());
-    });
-    probe.listen(Number(port), bindHost);
-  });
-}
-
 function openPanelInBrowser(url) {
   if (process.env.GPT_REPO_PANEL_OPEN !== "1") return;
   const command = process.platform === "win32" ? "cmd.exe" : process.platform === "darwin" ? "open" : "xdg-open";
@@ -215,13 +128,6 @@ function openPanelInBrowser(url) {
   } catch (error) {
     console.warn(`Failed to open browser: ${error instanceof Error ? error.message : String(error)}`);
   }
-}
-
-function runSync(command, args, options = {}) {
-  const result = spawnSync(command, args, { encoding: "utf8", windowsHide: true, ...options });
-  if (result.error) throw result.error;
-  if (result.status !== 0) throw new Error((result.stderr || result.stdout || `${command} failed`).trim());
-  return result.stdout;
 }
 
 function selectFolderDialog() {
@@ -252,409 +158,16 @@ function selectFolderDialog() {
   return { path: path.normalize(selectedPath), cancelled: false, platform: process.platform };
 }
 
-function parseCsvLine(line) {
-  const cells = [];
-  let current = "";
-  let quoted = false;
-  for (let i = 0; i < line.length; i += 1) {
-    const char = line[i];
-    if (char === '"' && line[i + 1] === '"') {
-      current += '"';
-      i += 1;
-      continue;
-    }
-    if (char === '"') {
-      quoted = !quoted;
-      continue;
-    }
-    if (char === "," && !quoted) {
-      cells.push(current);
-      current = "";
-      continue;
-    }
-    current += char;
-  }
-  cells.push(current);
-  return cells;
-}
-
-function isValidPort(value) {
-  const port = Number(value);
-  return Number.isInteger(port) && port >= 1 && port <= 65535;
-}
-
-function parsePortFilter(raw) {
-  const text = String(raw ?? "").trim();
-  if (!text) return null;
-  const ports = new Set();
-  for (const part of text.split(/[,\s]+/)) {
-    if (!part) continue;
-    const range = part.match(/^(\d{1,5})-(\d{1,5})$/);
-    if (range) {
-      const start = Number(range[1]);
-      const end = Number(range[2]);
-      if (!isValidPort(start) || !isValidPort(end) || end < start) throw new Error(`Invalid port range: ${part}`);
-      if (end - start > 2000) throw new Error(`Port range is too large: ${part}`);
-      for (let port = start; port <= end; port += 1) ports.add(port);
-      continue;
-    }
-    const port = Number(part);
-    if (!isValidPort(port)) throw new Error(`Invalid port: ${part}`);
-    ports.add(port);
-  }
-  return ports;
-}
-
-function portFromAddress(address) {
-  const text = String(address ?? "").trim();
-  const bracketMatch = text.match(/\]:(\d+)$/);
-  if (bracketMatch) return Number(bracketMatch[1]);
-  const suffixMatch = text.match(/:(\d+)$/);
-  return suffixMatch ? Number(suffixMatch[1]) : null;
-}
-
-function processNameMap() {
-  const names = new Map();
-  if (process.platform === "win32") {
-    try {
-      const raw = runSync("tasklist", ["/FO", "CSV", "/NH"]);
-      for (const line of raw.split(/\r?\n/)) {
-        if (!line.trim()) continue;
-        const cells = parseCsvLine(line);
-        const pid = Number(cells[1]);
-        if (Number.isInteger(pid)) names.set(pid, cells[0]);
-      }
-    } catch {}
-    return names;
-  }
-  try {
-    const raw = runSync("ps", ["-axo", "pid=,comm="]);
-    for (const line of raw.split(/\r?\n/)) {
-      const match = line.trim().match(/^(\d+)\s+(.+)$/);
-      if (match) names.set(Number(match[1]), match[2]);
-    }
-  } catch {}
-  return names;
-}
-
-function listWindowsOccupiedPorts(portSet, names) {
-  const raw = runSync("netstat", ["-ano"]);
-  const rows = [];
-  for (const line of raw.split(/\r?\n/)) {
-    const parts = line.trim().split(/\s+/);
-    const protocol = parts[0];
-    if (protocol !== "TCP" && protocol !== "UDP") continue;
-    if (parts.length < 4) continue;
-
-    const localAddress = parts[1];
-    const port = portFromAddress(localAddress);
-    if (!isValidPort(port) || (portSet && !portSet.has(port))) continue;
-
-    const state = protocol === "TCP" ? parts[3] : "UDP";
-    const pidText = protocol === "TCP" ? parts[4] : parts[3];
-    const pid = Number(pidText);
-    rows.push({
-      protocol,
-      localAddress,
-      port,
-      state: state || protocol,
-      pid: Number.isInteger(pid) ? pid : null,
-      processName: names.get(pid) ?? null
-    });
-  }
-  return rows;
-}
-
-function localSideFromConnectionName(name) {
-  return String(name ?? "")
-    .replace(/\s+\([^)]+\)$/, "")
-    .split("->")[0]
-    .trim();
-}
-
-function listUnixOccupiedPorts(portSet, names) {
-  try {
-    const raw = runSync("lsof", ["-nP", "-iTCP", "-iUDP"]);
-    const rows = [];
-    for (const line of raw.split(/\r?\n/).slice(1)) {
-      const parts = line.trim().split(/\s+/);
-      if (parts.length < 9) continue;
-      const pid = Number(parts[1]);
-      const protocol = parts[7]?.toUpperCase().startsWith("UDP") ? "UDP" : "TCP";
-      const name = parts.slice(8).join(" ");
-      const localAddress = localSideFromConnectionName(name);
-      const port = portFromAddress(localAddress);
-      if (!isValidPort(port) || (portSet && !portSet.has(port))) continue;
-      const stateMatch = name.match(/\(([^)]+)\)$/);
-      rows.push({
-        protocol,
-        localAddress,
-        port,
-        state: stateMatch?.[1] ?? protocol,
-        pid: Number.isInteger(pid) ? pid : null,
-        processName: parts[0] || names.get(pid) || null
-      });
-    }
-    return rows;
-  } catch {}
-
-  const raw = runSync("ss", ["-tunap"]);
-  const rows = [];
-  for (const line of raw.split(/\r?\n/).slice(1)) {
-    const parts = line.trim().split(/\s+/);
-    const protocol = parts[0]?.toUpperCase();
-    if (protocol !== "TCP" && protocol !== "UDP") continue;
-    if (parts.length < 5) continue;
-    const state = parts[1] || protocol;
-    const localAddress = protocol === "UDP" ? parts[4] : parts[4];
-    const port = portFromAddress(localAddress);
-    if (!isValidPort(port) || (portSet && !portSet.has(port))) continue;
-    const processMatch = line.match(/users:\(\("([^"]+)",pid=(\d+)/);
-    const pid = processMatch ? Number(processMatch[2]) : null;
-    rows.push({
-      protocol,
-      localAddress,
-      port,
-      state,
-      pid: Number.isInteger(pid) ? pid : null,
-      processName: processMatch?.[1] ?? (Number.isInteger(pid) ? names.get(pid) : null) ?? null
-    });
-  }
-  return rows;
-}
-
-function listOccupiedPorts(portSet) {
-  if (!(portSet instanceof Set) || portSet.size === 0) return [];
-  const names = processNameMap();
-  const rows = process.platform === "win32"
-    ? listWindowsOccupiedPorts(portSet, names)
-    : listUnixOccupiedPorts(portSet, names);
-  const deduped = new Map();
-  for (const row of rows) deduped.set(`${row.protocol}:${row.localAddress}:${row.state}:${row.pid ?? ""}`, row);
-  return [...deduped.values()].sort((a, b) => a.port - b.port || String(a.protocol).localeCompare(String(b.protocol)) || Number(a.pid ?? 0) - Number(b.pid ?? 0));
-}
-
-function suggestedPorts() {
-  const ports = new Set([Number(panelPort), Number(proxyPort)]);
-  try {
-    const state = loadState();
-    for (const item of state.instances) if (isValidPort(item.localPort)) ports.add(Number(item.localPort));
-  } catch {}
-  return [...ports].filter(isValidPort).sort((a, b) => a - b);
-}
-
-function portsView(rawPorts) {
-  const query = String(rawPorts ?? "").trim();
-  const portSet = query ? parsePortFilter(query) : new Set();
-  return {
-    checkedAt: new Date().toISOString(),
-    platform: process.platform,
-    query,
-    suggestedPorts: suggestedPorts(),
-    ports: query ? listOccupiedPorts(portSet) : []
-  };
-}
-
-function isNodeProcessName(name) {
-  const normalized = String(name ?? "").trim().toLowerCase();
-  return normalized === "node.exe" || normalized === "node";
-}
-
-function listWindowsNodePidMap() {
-  const names = new Map();
-  const raw = runSync("tasklist", ["/FI", "IMAGENAME eq node.exe", "/FO", "CSV", "/NH"]);
-  for (const line of raw.split(/\r?\n/)) {
-    if (!line.trim() || line.startsWith("INFO:")) continue;
-    const cells = parseCsvLine(line);
-    const pid = Number(cells[1]);
-    if (Number.isInteger(pid)) names.set(pid, cells[0] || "node.exe");
-  }
-  return names;
-}
-
-function listWindowsNodePorts() {
-  const names = listWindowsNodePidMap();
-  if (names.size === 0) return [];
-  const raw = runSync("netstat", ["-ano"]);
-  const rows = [];
-  const seen = new Set();
-  for (const line of raw.split(/\r?\n/)) {
-    const parts = line.trim().split(/\s+/);
-    const protocol = parts[0];
-    if (protocol !== "TCP" && protocol !== "UDP") continue;
-    if (parts.length < 4) continue;
-
-    const state = protocol === "TCP" ? parts[3] : "UDP";
-    if (protocol === "TCP" && state !== "LISTENING") continue;
-
-    const pidText = protocol === "TCP" ? parts[4] : parts[3];
-    const pid = Number(pidText);
-    if (!names.has(pid)) continue;
-
-    const localAddress = parts[1];
-    const port = portFromAddress(localAddress);
-    if (!isValidPort(port)) continue;
-
-    const key = `${protocol}:${localAddress}:${pid}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-
-    rows.push({
-      protocol,
-      localAddress,
-      port,
-      state,
-      pid,
-      processName: names.get(pid) ?? "node.exe"
-    });
-  }
-  return rows;
-}
-
-function listNodePorts() {
-  if (process.platform === "win32") return listWindowsNodePorts();
-  return listOccupiedPorts(new Set(suggestedPorts())).filter((row) => isNodeProcessName(row.processName));
-}
-
-function nodePortsView() {
-  const now = Date.now();
-  if (nodePortsCache.value && now - nodePortsCache.at < nodePortsCacheMs) return { ...nodePortsCache.value, cached: true };
-  const ports = listNodePorts().filter((row) => !isProtectedPanelPort(row.port)).sort((a, b) => a.port - b.port || Number(a.pid ?? 0) - Number(b.pid ?? 0));
-  const value = { checkedAt: new Date().toISOString(), platform: process.platform, cached: false, ports };
-  nodePortsCache = { at: now, value };
-  return value;
-}
-
-function invalidateNodePortsCache() {
-  nodePortsCache = { at: 0, value: null };
-}
-
-function isProtectedPanelPort(port) {
-  const value = Number(port);
-  return value === Number(panelPort) || value === Number(proxyPort);
-}
-
-function assertStartupPortFree(port) {
-  const occupants = listOccupiedPorts(new Set([Number(port)]));
-  if (occupants.length === 0) return;
-  const detail = occupants.map((row) => `${row.protocol} ${row.localAddress} pid=${row.pid ?? "unknown"} process=${row.processName ?? "unknown"}`).join("; ");
-  const error = new Error(`Port ${port} is already occupied: ${detail}`);
-  error.status = 409;
-  error.portConflict = { port: Number(port), occupants };
-  throw error;
-}
-
-function terminateNodeProcessForPort(input) {
-  const pid = Number(input?.pid);
-  const port = Number(input?.port);
-  if (!Number.isInteger(pid) || !isValidPort(port)) throw new Error("Invalid node port termination request.");
-  if (isProtectedPanelPort(port)) throw new Error(`端口 ${port} 已被保护，不能从面板结束。`);
-  if (process.platform === "win32") {
-    const matches = listWindowsNodePorts().filter((row) => row.pid === pid && row.port === port);
-    if (matches.length === 0) throw new Error(`PID ${pid} is not a node.exe process currently using port ${port}. Refresh and try again.`);
-  }
-  const result = terminateProcessForPort({ pid, port });
-  invalidateNodePortsCache();
-  return result;
-}
-
-function terminateProcessForPort(input) {
-  const pid = Number(input?.pid);
-  if (!Number.isInteger(pid) || pid <= 0) throw new Error(`Invalid PID: ${input?.pid}`);
-  if (pid === process.pid) throw new Error("Refusing to terminate the control panel process itself.");
-  if (pid <= 4) throw new Error(`Refusing to terminate protected/system PID: ${pid}`);
-
-  const port = input?.port == null || input.port === "" ? null : Number(input.port);
-  if (port != null) {
-    if (!isValidPort(port)) throw new Error(`Invalid port: ${input.port}`);
-    const ownsPort = listOccupiedPorts(new Set([port])).some((row) => row.pid === pid);
-    if (!ownsPort) throw new Error(`PID ${pid} is not currently using port ${port}. Refresh and try again.`);
-  }
-
-  if (process.platform === "win32") {
-    runSync("taskkill", ["/PID", String(pid), "/T", "/F"]);
-  } else {
-    process.kill(pid, "SIGTERM");
-  }
-  return { ok: true, pid, port, terminatedAt: new Date().toISOString() };
-}
-
-function syncConfig(item, main, configPath) {
-  const syncScript = path.join(scriptDir, "sync-repo-config.ps1");
-  runSync("powershell", [
-    "-NoProfile",
-    "-ExecutionPolicy",
-    "Bypass",
-    "-File",
-    syncScript,
-    "-ProjectDir",
-    path.join(String(main.installRoot), String(main.projectDirName)),
-    "-RepoRoot",
-    item.repoPath,
-    "-RepoMode",
-    item.repoMode ?? "read",
-    "-AllowNonGit",
-    String(item.allowNonGit ?? true),
-    "-IncludeChildDirs",
-    String(item.includeChildDirs ?? true),
-    "-OutputConfig",
-    configPath
-  ]);
-}
-
-function detectTailscaleName() {
-  try {
-    const raw = runSync("tailscale", ["status", "--json"]);
-    const status = JSON.parse(raw);
-    return status?.Self?.DNSName ? String(status.Self.DNSName).replace(/\.$/, "") : null;
-  } catch {
-    return null;
-  }
-}
-
-function httpsBaseUrl(dnsName, httpsPort) {
-  return Number(httpsPort) === 443 ? `https://${dnsName}` : `https://${dnsName}:${httpsPort}`;
-}
-
 function currentProxyHttpsPort() {
   const main = loadMainConfig();
   return Number(main.proxyHttpsPort ?? main.httpsPort ?? 443);
-}
-
-function startProxyFunnel(httpsPort = currentProxyHttpsPort()) {
-  if (proxyFunnelStarted) {
-    return { started: true, httpsPort, publicBaseUrl: proxyPublicBaseUrl };
-  }
-  runSync("tailscale", ["funnel", "--bg", `--https=${httpsPort}`, `localhost:${proxyPort}`]);
-  proxyFunnelStarted = true;
-  const dns = detectTailscaleName();
-  proxyPublicBaseUrl = dns ? httpsBaseUrl(dns, httpsPort) : `https://YOUR_DEVICE.YOUR_TAILNET.ts.net${Number(httpsPort) === 443 ? "" : `:${httpsPort}`}`;
-  return { started: true, httpsPort, publicBaseUrl: proxyPublicBaseUrl };
-}
-
-function stopProxyFunnel(httpsPort = currentProxyHttpsPort(), ignoreErrors = false) {
-  try {
-    runSync("tailscale", ["funnel", `--https=${httpsPort}`, "off"]);
-  } catch (error) {
-    if (!ignoreErrors) throw error;
-  }
-  proxyFunnelStarted = false;
-  proxyPublicBaseUrl = localProxyBaseUrl();
-  return { started: false, httpsPort, publicBaseUrl: proxyPublicBaseUrl };
-}
-
-function instanceForPublicCode(publicCode) {
-  const state = loadState();
-  const main = loadMainConfig();
-  const textLength = Number(main.tokenLength ?? 32);
-  return state.instances.find((item) => publicCodeFor(item.repoPath, textLength) === publicCode);
 }
 
 function proxyTargetFromRequest(req) {
   const url = new URL(req.url ?? "/", `http://${proxyHost}:${proxyPort}`);
   const match = url.pathname.match(/^\/t\/([^/]+)\/mcp$/);
   if (!match) return null;
-  const item = instanceForPublicCode(match[1]);
+  const item = instanceSupervisor.findByPublicCode(match[1]);
   return item ? { item, path: url.pathname + url.search } : null;
 }
 
@@ -676,7 +189,8 @@ function forwardToInstance(req, res, item, targetPath) {
 
   proxyReq.on("error", (error) => {
     if (!res.headersSent) {
-      sendJson(res, { error: `Proxy target failed: ${error.message}` }, 502);
+      res.writeHead(502, { "content-type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify({ error: `Proxy target failed: ${error.message}` }));
     } else {
       res.destroy(error);
     }
@@ -685,681 +199,24 @@ function forwardToInstance(req, res, item, targetPath) {
   req.pipe(proxyReq);
 }
 
-async function startInstance(id) {
-  const state = loadState();
-  const item = state.instances.find((candidate) => candidate.id === id);
-  if (!item) throw new Error(`Unknown instance: ${id}`);
-  const existing = runtime.get(id);
-  if (existing?.child && !existing.child.killed && !existing.exited) return instanceView(item);
-
-  const main = loadMainConfig();
-  const projectDir = path.join(String(main.installRoot), String(main.projectDirName));
-  if (!existsSync(path.join(projectDir, "package.json"))) throw new Error(`Project not found: ${projectDir}`);
-  if (!existsSync(item.repoPath)) throw new Error(`Repo path not found: ${item.repoPath}`);
-
-  assertStartupPortFree(Number(item.localPort));
-  await assertPortAvailable(Number(item.localPort), "127.0.0.1", `MCP instance ${id}`);
-
-  const dir = instanceDir(id);
-  ensureDir(dir);
-  const configPath = path.join(dir, "config.runtime.json");
-  const logPath = path.join(dir, "server.log");
-  syncConfig(item, main, configPath);
-
-  const publicCode = publicCodeFor(item.repoPath, Number(main.tokenLength ?? 32));
-  const disableToolGate = true;
-  const runtimeCode = disableToolGate ? null : randomText(Number(main.tokenLength ?? 32));
-  const localUrl = `http://localhost:${proxyPort}/t/${publicCode}/mcp`;
-
-  const logStream = createWriteStream(logPath, { flags: "a" });
-  const env = { ...process.env };
-  env.GPT_REPO_CONFIG = configPath;
-  env.PORT = String(item.localPort);
-  env["GPT_REPO_PUBLIC_PATH_" + "TO" + "KEN"] = publicCode;
-  if (runtimeCode) env.GPT_REPO_TOOL_GATE_CODE = runtimeCode;
-  else delete env.GPT_REPO_TOOL_GATE_CODE;
-  env.NO_COLOR = "1";
-
-  const command = process.platform === "win32" ? "cmd.exe" : "npm";
-  const args = process.platform === "win32"
-    ? ["/d", "/s", "/c", "npm.cmd", "run", "--silent", "dev"]
-    : ["run", "--silent", "dev"];
-
-  logStream.write(`\n[control-panel] ${new Date().toISOString()} starting: ${command} ${args.join(" ")}\n`);
-  logStream.write(`[control-panel] cwd: ${projectDir}\n`);
-  logStream.write(`[control-panel] config: ${configPath}\n`);
-  logStream.write(`[control-panel] mcp_code gate: ${disableToolGate ? "disabled" : "enabled"}\n`);
-
-  let child;
-  try {
-    child = spawn(command, args, {
-      cwd: projectDir,
-      env,
-      windowsHide: true,
-      shell: false,
-      stdio: ["ignore", "pipe", "pipe"]
-    });
-  } catch (error) {
-    logStream.end(`[control-panel] spawn failed: ${error instanceof Error ? error.stack : String(error)}\n`);
-    throw error;
-  }
-
-  child.stdout?.pipe(logStream, { end: false });
-  child.stderr?.pipe(logStream, { end: false });
-
-  const live = { child, publicCode, localUrl, runtimeCode, logPath, lastError: null, logStream, disableToolGate, exited: false };
-  runtime.set(id, live);
-  child.on("exit", (code, signal) => {
-    live.exited = true;
-    live.lastError = live.stopRequested || code === 0 || signal ? null : `Exited with code ${code}`;
-    if (!logStream.destroyed && !logStream.writableEnded) {
-      logStream.end(`[control-panel] ${live.stopRequested ? "stopped" : "exited"} code=${code} signal=${signal ?? ""}\n`);
-    }
-  });
-  child.on("error", (error) => {
-    live.exited = true;
-    live.lastError = `${error.message} (command: ${command} ${args.join(" ")}; cwd: ${projectDir}; log: ${logPath})`;
-    if (!logStream.destroyed && !logStream.writableEnded) {
-      logStream.end(`[control-panel] child error: ${error instanceof Error ? error.stack : String(error)}\n`);
-    }
-  });
-
-  return instanceView(item);
-}
-
-function terminateManagedChild(child, id) {
-  const pid = Number(child?.pid);
-  if (!Number.isInteger(pid) || pid <= 0) {
-    throw new Error(`Cannot stop instance ${id}: invalid child PID.`);
-  }
-
-  if (process.platform === "win32") {
-    // The managed process is cmd.exe -> npm -> tsx -> node. Killing only
-    // cmd.exe leaves the descendant node.exe listening on the MCP port.
-    runSync("taskkill", ["/PID", String(pid), "/T", "/F"]);
-    return;
-  }
-
-  child.kill("SIGTERM");
-}
-
-function stopInstance(id) {
-  const state = loadState();
-  const item = state.instances.find((candidate) => candidate.id === id);
-  const live = runtime.get(id);
-  if (live) live.stopRequested = true;
-  if (live?.child && live.child.exitCode === null) terminateManagedChild(live.child, id);
-  if (live?.logStream && !live.logStream.destroyed && !live.logStream.writableEnded && (!live.child || live.child.exitCode !== null)) {
-    live.logStream.end("[control-panel] stopped without a live child process\n");
-  }
-  invalidateNodePortsCache();
-  runtime.delete(id);
-  return item ? instanceView(item) : { id, running: false };
-}
-
-function addInstance(input) {
-  const state = loadState();
-  const repoPath = resolveConfigPath(input.repoPath, ".");
-  if (!repoPath || !existsSync(repoPath)) throw new Error(`Directory does not exist: ${repoPath}`);
-  const key = pathKey(repoPath);
-  const id = `mcp-${key}`;
-  let item = state.instances.find((candidate) => candidate.id === id);
-  if (!item) {
-    item = {
-      id,
-      repoPath,
-      repoMode: input.repoMode ?? "write",
-      localPort: input.localPort ? Number(input.localPort) : pickPort(state),
-      useFunnel: input.useFunnel !== false,
-      httpsPort: input.httpsPort ? Number(input.httpsPort) : 443,
-      allowNonGit: input.allowNonGit !== false,
-      includeChildDirs: input.includeChildDirs !== false,
-      disableToolGate: input.disableToolGate === true
-    };
-    state.instances.push(item);
-  } else {
-    const live = runtime.get(id);
-    if (live?.child && !live.child.killed) stopInstance(id);
-    item.repoMode = input.repoMode ?? item.repoMode;
-    item.localPort = input.localPort ? Number(input.localPort) : item.localPort;
-    item.useFunnel = input.useFunnel !== false;
-    item.httpsPort = input.httpsPort ? Number(input.httpsPort) : item.httpsPort;
-    item.allowNonGit = input.allowNonGit !== false;
-    item.includeChildDirs = input.includeChildDirs !== false;
-    item.disableToolGate = input.disableToolGate === true;
-  }
-  saveState(state);
-  return instanceView(item);
-}
-
-function removeInstance(id) {
-  stopInstance(id);
-  const state = loadState();
-  state.instances = state.instances.filter((item) => item.id !== id);
-  saveState(state);
-  return { ok: true };
-}
-
-function sendJson(res, value, status = 200) {
-  res.writeHead(status, { "content-type": "application/json; charset=utf-8" });
-  res.end(JSON.stringify(value, null, 2));
-}
-
-async function readBody(req) {
-  const chunks = [];
-  for await (const chunk of req) chunks.push(chunk);
-  if (chunks.length === 0) return {};
-  return JSON.parse(Buffer.concat(chunks).toString("utf8"));
-}
-
-const html = `<!doctype html>
-<html lang="zh-CN">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>GPT Repo MCP 控制面板</title>
-<style>
-:root{color-scheme:light}*{box-sizing:border-box}body{font-family:Segoe UI,Microsoft YaHei,Arial,sans-serif;margin:0;background:#f6f8fb;color:#111827}main{max-width:1180px;margin:0 auto;padding:28px}.card{background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:18px;margin:16px 0;box-shadow:0 1px 2px rgba(15,23,42,.06)}h1{margin:0 0 8px;font-size:26px;color:#111827}h2{margin:0 0 14px;font-size:18px;color:#111827}.muted{color:#64748b}input,select{background:#fff;color:#111827;border:1px solid #cbd5e1;border-radius:8px;padding:10px;width:100%}label{display:block;font-size:13px;color:#1d4ed8;margin:0 0 6px}input[type="checkbox"]{width:auto}.checkline{display:flex;align-items:center;gap:8px;min-height:39px}.checkline label{margin:0;color:#111827}.grid{display:grid;grid-template-columns:2fr 120px 120px 120px;gap:12px;align-items:end}.port-grid{display:grid;grid-template-columns:1fr auto auto;gap:12px;align-items:end}.nowrap{white-space:nowrap}button{background:#2563eb;color:white;border:0;border-radius:8px;padding:10px 13px;cursor:pointer;white-space:nowrap}button.secondary{background:#e2e8f0;color:#0f172a}button.danger{background:#dc2626;color:white}button:disabled{cursor:not-allowed;opacity:.5}table{width:100%;border-collapse:collapse;font-size:14px;background:#fff}th,td{border-bottom:1px solid #e5e7eb;padding:12px;text-align:left;vertical-align:top}code{background:#f8fafc;border:1px solid #e2e8f0;border-radius:7px;padding:3px 6px;word-break:break-all;color:#0f172a}.ok{color:#16a34a}.warn{color:#d97706}.off{color:#dc2626}.row-actions{display:flex;gap:8px;flex-wrap:wrap}.funnel-control{display:flex;align-items:center;justify-content:space-between;gap:18px}.status-line{margin-top:5px;white-space:normal}.small{font-size:12px}.url{max-width:520px}.url-line{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.url-text{word-break:break-all;color:#0f172a}.code{max-width:280px}@media(max-width:900px){main{padding:16px}.grid,.port-grid{grid-template-columns:1fr}table{display:block;overflow:auto}}
-
-main{max-width:1280px}.instance-table{table-layout:fixed;width:100%}.instance-table th,.instance-table td{overflow:hidden}.instance-table th:nth-child(1),.instance-table td:nth-child(1){width:14%}.instance-table th:nth-child(2),.instance-table td:nth-child(2){width:24%}.instance-table th:nth-child(3),.instance-table td:nth-child(3){width:7%;white-space:nowrap}.instance-table th:nth-child(4),.instance-table td:nth-child(4){width:35%}.instance-table th:nth-child(5),.instance-table td:nth-child(5){width:20%}.instance-table .repo-path{display:block;max-width:100%;white-space:normal;word-break:break-all;color:#0f172a}.instance-table .url-line{display:block}.instance-table .url-text{display:block;line-height:1.45;word-break:break-all}.instance-table .url-line .secondary{margin-top:8px;width:86px;padding:8px 10px}.instance-table .row-actions{display:flex;gap:8px;flex-wrap:wrap}.instance-table td:nth-child(5) .small{margin-top:8px;max-width:100%;word-break:break-all}.instance-table td:nth-child(1) b{white-space:nowrap}.secret{filter:blur(5px);transition:filter .15s ease;cursor:default}.secret:hover,.secret:focus{filter:none}.secret-inline{display:inline-block}.secret-block{display:block}
-</style>
-</head>
-<body>
-<main>
-  <h1>GPT Repo MCP 控制面板</h1>
-  <div id="state" class="muted">正在加载...</div>
-
-  <section class="card">
-    <div class="funnel-control">
-      <div>
-        <h2>Funnel 访问控制</h2>
-        <div id="funnelStatus" class="muted">正在读取 Funnel 状态...</div>
-      </div>
-      <div class="row-actions">
-        <button id="startFunnelBtn" type="button" onclick="startFunnel()">开启 Funnel</button>
-        <button id="stopFunnelBtn" type="button" class="secondary" onclick="stopFunnel()">关闭 Funnel</button>
-      </div>
-    </div>
-    <div class="muted small" style="margin-top:10px">关闭 Funnel 只会断开 ChatGPT 使用的公网入口，不会停止下面正在运行的 MCP 服务器。</div>
-  </section>
-
-  <section class="card">
-    <h2>Node.js 端口监控</h2>
-    <div class="muted small">仅显示 Node.js 进程监听的业务端口，8790 和 8800 已屏蔽，避免误触。</div>
-    <div id="portsStatus" class="muted small" style="margin-top:10px">正在加载 Node.js 端口...</div>
-    <table id="portTable" style="display:none">
-      <thead><tr><th>端口</th><th>PID</th><th>进程</th><th>协议状态</th><th>地址</th><th>操作</th></tr></thead>
-      <tbody id="portRows"></tbody>
-    </table>
-  </section>
-
-  <section class="card">
-    <h2>添加实例</h2>
-    <div class="grid">
-      <div><label for="repoPath">仓库路径</label><input id="repoPath" placeholder="D:\\projects\\your_project" /></div>
-      <div><label for="repoMode">模式</label><select id="repoMode"><option value="read">只读</option><option value="write" selected>可写</option><option value="ship">发布</option></select></div>
-      <div><label for="localPort">本地端口</label><input id="localPort" placeholder="自动" /></div>
-      <div><button type="button" onclick="addInstance()">添加</button></div>
-    </div>
-  </section>
-
-  <section class="card">
-    <h2>实例列表</h2>
-    <table class="instance-table">
-      <thead><tr><th>状态</th><th>仓库</th><th>端口</th><th>URL</th><th>操作</th></tr></thead>
-      <tbody id="rows"></tbody>
-    </table>
-  </section>
-</main>
-<script>
-async function api(path, options){
-  options = options || {};
-  var res = await fetch(path, Object.assign({ headers: { 'content-type': 'application/json' } }, options));
-  var text = await res.text();
-  var data = text ? JSON.parse(text) : {};
-  if (!res.ok) {
-    var error = new Error(data.error || data.message || text || '请求失败');
-    error.data = data;
-    error.status = res.status;
-    throw error;
-  }
-  return data;
-}
-function text(value){ return value == null ? '' : String(value); }
-function setCell(row, value, className){
-  var cell = document.createElement('td');
-  if (className) cell.className = className;
-  cell.textContent = text(value);
-  row.appendChild(cell);
-  return cell;
-}
-function makeCode(value){
-  var code = document.createElement('code');
-  code.textContent = text(value);
-  return code;
-}
-function makeSecret(value, block){
-  var span = document.createElement('span');
-  span.className = block ? 'secret secret-block' : 'secret secret-inline';
-  span.tabIndex = 0;
-  span.textContent = text(value);
-  return span;
-}
-function copyText(value){
-  if (!value) return;
-  var clip = navigator['clip' + 'board'];
-  if (clip && clip['write' + 'Text']) clip['write' + 'Text'](value).catch(function(){});
-}
-function setStatus(message, isError){
-  var stateEl = document.getElementById('state');
-  stateEl.textContent = message;
-  stateEl.className = isError ? 'off' : 'muted';
-}
-function setProxyStatus(data){
-  var stateEl = document.getElementById('state');
-  var funnelStarted = Boolean(data.proxy && data.proxy.funnelStarted);
-  stateEl.replaceChildren();
-  stateEl.className = 'muted';
-  stateEl.appendChild(document.createTextNode('面板：'));
-  stateEl.appendChild(makeSecret('http://' + data.panel.host + ':' + data.panel.port, false));
-  stateEl.appendChild(document.createTextNode(' ｜ 本地代理：'));
-  stateEl.appendChild(makeSecret('http://' + data.proxy.host + ':' + data.proxy.port, false));
-
-  var funnelStatus = document.getElementById('funnelStatus');
-  funnelStatus.textContent = funnelStarted
-    ? 'Funnel 已开启，公网入口当前可用。'
-    : 'Funnel 已关闭，公网 URL 当前不可访问。MCP 服务器可以继续在本机运行。';
-  funnelStatus.className = funnelStarted ? 'ok' : 'warn';
-
-  document.getElementById('startFunnelBtn').disabled = funnelStarted;
-  document.getElementById('stopFunnelBtn').disabled = !funnelStarted;
-}
-function setPortsStatus(message, isError){
-  var stateEl = document.getElementById('portsStatus');
-  stateEl.textContent = message;
-  stateEl.className = isError ? 'off small' : 'muted small';
-}
-function clearPorts(message){
-  document.getElementById('portRows').replaceChildren();
-  document.getElementById('portTable').style.display = 'none';
-  setPortsStatus(message || 'Enter a port or range to query.', false);
-}
-function renderPorts(data){
-  var rows = document.getElementById('portRows');
-  rows.replaceChildren();
-  document.getElementById('portTable').style.display = '';
-  var items = data.ports || [];
-  if (!items.length) {
-    var row = document.createElement('tr');
-    var cell = document.createElement('td');
-    cell.colSpan = 6;
-    cell.className = 'muted';
-    cell.textContent = '没有发现 Node.js 业务端口。';
-    row.appendChild(cell);
-    rows.appendChild(row);
-    return;
-  }
-  items.forEach(function(item){
-    var row = document.createElement('tr');
-    setCell(row, item.port, 'nowrap');
-    setCell(row, item.pid || '未知', 'nowrap');
-    setCell(row, item.processName || '未知');
-    setCell(row, item.protocol + ' ' + item.state, 'nowrap');
-    var addrCell = document.createElement('td');
-    addrCell.appendChild(makeCode(item.localAddress));
-    row.appendChild(addrCell);
-    var actionCell = document.createElement('td');
-    if (item.pid) {
-      var btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'danger';
-      btn.dataset.pid = item.pid;
-      btn.dataset.port = item.port;
-      btn.textContent = '结束进程';
-      actionCell.appendChild(btn);
-    } else {
-      actionCell.textContent = '无法获取 PID';
-    }
-    row.appendChild(actionCell);
-    rows.appendChild(row);
-  });
-}
-async function refreshPorts(){
-  if (window.__portsRefreshInFlight) return;
-  window.__portsRefreshInFlight = true;
-
-  try {
-    var data = await api('/api/node-ports');
-    var ports = Array.isArray(data.ports) ? data.ports : [];
-    var cacheLabel = data.cached ? '（缓存）' : '';
-
-    setPortsStatus(
-      '已检查到 ' + ports.length +
-      ' 条 Node.js 端口记录' + cacheLabel +
-      '，时间：' + (data.checkedAt || '未知时间') +
-      '，平台：' + (data.platform || '未知平台') + '。',
-      false
-    );
-
-    renderPorts(Object.assign({}, data, { ports: ports }));
-  } catch (error) {
-    setPortsStatus(
-      'Node.js 端口刷新失败：' + (error && error.message ? error.message : error),
-      true
-    );
-  } finally {
-    window.__portsRefreshInFlight = false;
-  }
-}
-async function killPortPid(pid, port){
-  if (!confirm('确认结束占用端口 ' + port + ' 的 PID ' + pid + '？')) return;
-  try {
-    setPortsStatus('正在结束 PID ' + pid + ' ...', false);
-    await api('/api/node-ports/' + encodeURIComponent(pid) + '/kill', { method: 'POST', body: JSON.stringify({ port: Number(port) }) });
-    await refreshPorts();
-  } catch (error) {
-    try { await refreshPorts(); } catch {}
-    setPortsStatus('结束进程失败：' + (error && error.message ? error.message : error), true);
-  }
-}
-function renderRows(items){
-  var rows = document.getElementById('rows');
-  rows.replaceChildren();
-  if (!items.length) {
-    var row = document.createElement('tr');
-    var cell = document.createElement('td');
-    cell.colSpan = 5;
-    cell.className = 'muted';
-    cell.textContent = '还没有实例。';
-    row.appendChild(cell);
-    rows.appendChild(row);
-    return;
-  }
-  items.forEach(function(item){
-    var row = document.createElement('tr');
-
-    var statusCell = document.createElement('td');
-    var status = document.createElement('b');
-    status.className = item.available ? 'ok' : (item.mcpRunning || item.funnelRunning ? 'warn' : 'off');
-    status.textContent = item.available ? '连接可用' : '连接不可用';
-    statusCell.appendChild(status);
-
-    var mcpState = document.createElement('div');
-    mcpState.className = (item.mcpRunning ? 'ok' : 'off') + ' small status-line';
-    mcpState.textContent = 'MCP：' + (item.mcpRunning ? '运行中' : '已停止');
-    statusCell.appendChild(mcpState);
-
-    var funnelState = document.createElement('div');
-    funnelState.className = (item.funnelRunning ? 'ok' : 'warn') + ' small status-line';
-    funnelState.textContent = 'Funnel：' + (item.funnelRunning ? '已开启' : '已关闭');
-    statusCell.appendChild(funnelState);
-
-    if (item.lastError) {
-      var err = document.createElement('div');
-      err.className = 'off small status-line';
-      err.textContent = item.lastError;
-      statusCell.appendChild(err);
-    }
-    row.appendChild(statusCell);
-
-    var pathCell = document.createElement('td');
-    var repoPath = document.createElement('span');
-    repoPath.className = 'repo-path';
-    repoPath.textContent = item.repoPath;
-    pathCell.appendChild(repoPath);
-    var id = document.createElement('div');
-    id.className = 'muted small';
-    id.textContent = item.id;
-    pathCell.appendChild(id);
-    row.appendChild(pathCell);
-
-    setCell(row, item.localPort);
-
-    var urlCell = document.createElement('td');
-    urlCell.className = 'url';
-    if (item.available && item.url) {
-      var urlLine = document.createElement('div');
-      urlLine.className = 'url-line';
-      var urlText = document.createElement('span');
-      urlText.className = 'url-text secret secret-block';
-      urlText.textContent = item.url;
-      var copyBtn = document.createElement('button');
-      copyBtn.type = 'button';
-      copyBtn.className = 'secondary';
-      copyBtn.textContent = '复制 URL';
-      copyBtn.addEventListener('click', function(){ copyText(item.url); });
-      urlLine.appendChild(urlText);
-      urlLine.appendChild(copyBtn);
-      urlCell.appendChild(urlLine);
-    } else if (item.mcpRunning && !item.funnelRunning) {
-      urlCell.textContent = 'Funnel 已关闭，公网 URL 当前已失效。';
-    } else if (!item.mcpRunning && item.funnelRunning) {
-      urlCell.textContent = 'Funnel 已开启，但 MCP 服务器未运行。';
-    } else {
-      urlCell.textContent = 'MCP 服务器和 Funnel 均未运行。';
-    }
-    row.appendChild(urlCell);
-
-    var actionCell = document.createElement('td');
-    var actions = document.createElement('div');
-    actions.className = 'row-actions';
-    [['start','启动',''], ['stop','停止','secondary'], ['remove','删除','danger']].forEach(function(spec){
-      var btn = document.createElement('button');
-      btn.type = 'button';
-      btn.dataset.action = spec[0];
-      btn.dataset.id = item.id;
-      btn.textContent = spec[1];
-      if (spec[2]) btn.className = spec[2];
-      actions.appendChild(btn);
-    });
-    actionCell.appendChild(actions);
-    var log = document.createElement('div');
-    log.className = 'muted small';
-    log.textContent = '日志：' + text(item.logPath);
-    actionCell.appendChild(log);
-    row.appendChild(actionCell);
-
-    rows.appendChild(row);
-  });
-}
-async function refresh(){
-  try {
-    var data = await api('/api/state');
-    var suggested = [data.panel && data.panel.port, data.proxy && data.proxy.port].concat((data.instances || []).map(function(item){ return item.localPort; }));
-    window.__suggestedPorts = suggested.filter(function(port, index, all){ return port && all.indexOf(port) === index; });
-    setProxyStatus(data);
-    renderRows(data.instances || []);
-  } catch (error) {
-    setStatus('刷新失败：' + (error && error.message ? error.message : error), true);
-    document.getElementById('rows').replaceChildren();
-  }
-}
-function setupRepoPathPicker(){
-  var input = document.getElementById('repoPath');
-  if (!input) return;
-  input.placeholder = '请选择或粘贴本地项目路径';
-  if (document.getElementById('chooseRepoFolderBtn')) return;
-
-  var wrapper = document.createElement('div');
-  wrapper.style.display = 'grid';
-  wrapper.style.gridTemplateColumns = '1fr auto';
-  wrapper.style.gap = '8px';
-  wrapper.style.alignItems = 'center';
-
-  var button = document.createElement('button');
-  button.id = 'chooseRepoFolderBtn';
-  button.type = 'button';
-  button.className = 'secondary';
-  button.textContent = '选择文件夹';
-  button.style.height = '39px';
-  button.addEventListener('click', chooseRepoFolder);
-
-  input.parentNode.insertBefore(wrapper, input);
-  wrapper.appendChild(input);
-  wrapper.appendChild(button);
-}
-
-async function chooseRepoFolder(){
-  try {
-    setStatus('正在打开文件夹选择窗口 ...', false);
-    var data = await api('/api/select-folder', { method: 'POST', body: '{}' });
-    if (data && data.path) {
-      document.getElementById('repoPath').value = data.path;
-      setStatus('已选择仓库路径。', false);
-      return;
-    }
-    setStatus('已取消选择文件夹。', false);
-  } catch (error) {
-    var message = error && error.message ? error.message : String(error);
-    setStatus('选择文件夹失败：' + message, true);
-    window.alert('选择文件夹失败：' + message + '\\n\\n可以手动复制文件夹路径到输入框。');
-  }
-}
-
-async function startFunnel(){
-  try {
-    setStatus('正在开启 Funnel ...', false);
-    await api('/api/funnel/start', { method: 'POST' });
-    await refresh();
-    setStatus('Funnel 已开启。', false);
-  } catch (error) {
-    try { await refresh(); } catch {}
-    window.alert('开启 Funnel 失败：' + (error && error.message ? error.message : error));
-    setStatus('开启 Funnel 失败：' + (error && error.message ? error.message : error), true);
-  }
-}
-
-async function stopFunnel(){
-  if (!confirm('确认关闭 Funnel？MCP 服务器会继续运行，但 ChatGPT 将无法通过公网 URL 访问它们。')) return;
-  try {
-    setStatus('正在关闭 Funnel ...', false);
-    await api('/api/funnel/stop', { method: 'POST' });
-    await refresh();
-    setStatus('Funnel 已关闭，MCP 服务器仍保持原状态。', false);
-  } catch (error) {
-    try { await refresh(); } catch {}
-    window.alert('关闭 Funnel 失败：' + (error && error.message ? error.message : error));
-    setStatus('关闭 Funnel 失败：' + (error && error.message ? error.message : error), true);
-  }
-}
-
-async function addInstance(){
-  var body = {
-    repoPath: document.getElementById('repoPath').value,
-    repoMode: document.getElementById('repoMode').value,
-    localPort: document.getElementById('localPort').value ? Number(document.getElementById('localPort').value) : undefined,
-    useFunnel: true,
-    disableToolGate: true
-  };
-  try {
-    setStatus('正在保存实例配置 ...', false);
-    await api('/api/instances', { method: 'POST', body: JSON.stringify(body) });
-    document.getElementById('repoPath').value = '';
-    document.getElementById('localPort').value = '';
-    await refresh();
-  } catch (error) {
-    try { await refresh(); } catch {}
-    setStatus('保存失败：' + (error && error.message ? error.message : error), true);
-  }
-}
-async function startInstance(id){
-  try {
-    setStatus('正在启动实例 ' + id + ' ...', false);
-    await api('/api/instances/' + encodeURIComponent(id) + '/start', { method: 'POST' });
-    await refresh();
-    await refreshPorts();
-  } catch (error) {
-    try { await refresh(); } catch {}
-    window.alert('启动失败：' + (error && error.message ? error.message : error));
-    setStatus('启动失败：' + (error && error.message ? error.message : error), true);
-  }
-}
-async function stopInstance(id){
-  try {
-    setStatus('正在停止实例 ' + id + ' ...', false);
-    await api('/api/instances/' + encodeURIComponent(id) + '/stop', { method: 'POST' });
-    await refresh();
-    await refreshPorts();
-  } catch (error) {
-    try { await refresh(); } catch {}
-    setStatus('停止失败：' + (error && error.message ? error.message : error), true);
-  }
-}
-async function removeInstance(id){
-  if (!confirm('确认删除这个实例配置？')) return;
-  try {
-    setStatus('正在删除实例 ' + id + ' ...', false);
-    await api('/api/instances/' + encodeURIComponent(id), { method: 'DELETE' });
-    await refresh();
-  } catch (error) {
-    try { await refresh(); } catch {}
-    setStatus('删除失败：' + (error && error.message ? error.message : error), true);
-  }
-}
-document.getElementById('rows').addEventListener('click', function(event){
-  var btn = event.target.closest('button[data-action]');
-  if (!btn) return;
-  if (btn.dataset.action === 'start') startInstance(btn.dataset.id);
-  if (btn.dataset.action === 'stop') stopInstance(btn.dataset.id);
-  if (btn.dataset.action === 'remove') removeInstance(btn.dataset.id);
-});
-document.getElementById('portRows').addEventListener('click', function(event){
-  var btn = event.target.closest('button[data-pid][data-port]');
-  if (!btn) return;
-  killPortPid(btn.dataset.pid, btn.dataset.port);
-});
-window.addEventListener('error', function(event){
-  setStatus('界面错误：' + event.message, true);
-});
-setupRepoPathPicker();
-refresh();
-refreshPorts();
-setInterval(refresh, 3000);
-setInterval(refreshPorts, 5000);
-</script>
-</body>
-</html>`;
-
-const server = http.createServer(async (req, res) => {
-  try {
-    const url = new URL(req.url ?? "/", `http://${host}:${panelPort}`);
-    if (req.method === "GET" && url.pathname === "/") {
-      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-      res.end(html);
-      return;
-    }
-    if (req.method === "GET" && url.pathname === "/api/state") return sendJson(res, listView());
-    if (req.method === "POST" && url.pathname === "/api/funnel/start") {
-      startProxyFunnel();
-      return sendJson(res, listView());
-    }
-    if (req.method === "POST" && url.pathname === "/api/funnel/stop") {
-      stopProxyFunnel();
-      return sendJson(res, listView());
-    }
-    if (req.method === "GET" && url.pathname === "/api/ports") return sendJson(res, portsView(url.searchParams.get("ports")));
-    if (req.method === "GET" && url.pathname === "/api/node-ports") return sendJson(res, nodePortsView());
-    if (req.method === "POST" && url.pathname === "/api/select-folder") return sendJson(res, selectFolderDialog());
-    const nodePortKillMatch = url.pathname.match(/^\/api\/node-ports\/(\d+)\/kill$/);
-    if (nodePortKillMatch && req.method === "POST") return sendJson(res, terminateNodeProcessForPort({ ...(await readBody(req)), pid: nodePortKillMatch[1] }));
-    const portKillMatch = url.pathname.match(/^\/api\/ports\/(\d+)\/kill$/);
-    if (portKillMatch && req.method === "POST") return sendJson(res, terminateProcessForPort({ ...(await readBody(req)), pid: portKillMatch[1] }));
-    if (req.method === "POST" && url.pathname === "/api/instances") return sendJson(res, addInstance(await readBody(req)));
-    const match = url.pathname.match(/^\/api\/instances\/([^/]+)(?:\/(start|stop))?$/);
-    if (match && req.method === "POST" && match[2] === "start") {
-      try {
-        return sendJson(res, await startInstance(match[1]));
-      } catch (error) {
-        const message = rememberInstanceError(match[1], error);
-        const status = Number(error?.status ?? 500);
-        return sendJson(res, { error: message, portConflict: error?.portConflict ?? null }, status);
-      }
-    }
-    if (match && req.method === "POST" && match[2] === "stop") return sendJson(res, stopInstance(match[1]));
-    if (match && req.method === "DELETE") return sendJson(res, removeInstance(match[1]));
-    sendJson(res, { error: "Not found" }, 404);
-  } catch (error) {
-    sendJson(res, { error: error instanceof Error ? error.message : String(error) }, 500);
+const server = createPanelServer({
+  html: controlPanelHtml,
+  actions: {
+    getState: listView,
+    startFunnel: () => funnelController.start(),
+    stopFunnel: () => funnelController.stop(),
+    getPorts: (query) => portProcessManager.portsView(query),
+    getNodePorts: () => portProcessManager.nodePortsView(),
+    selectFolder: selectFolderDialog,
+    initializeMcp: (id) => instanceSupervisor.initializeMcp(id),
+    listMcpTools: (id) => instanceSupervisor.listMcpTools(id),
+    callMcpTool: (id, input) => instanceSupervisor.callMcpTool(id, input),
+    terminateNodeProcess: (input) => portProcessManager.terminateNodeProcess(input),
+    terminateProcess: (input) => portProcessManager.terminateProcess(input),
+    addInstance: (input) => instanceSupervisor.add(input),
+    startInstance: (id) => instanceSupervisor.start(id),
+    stopInstance: (id) => instanceSupervisor.stop(id),
+    removeInstance: (id) => instanceSupervisor.remove(id)
   }
 });
 
@@ -1374,11 +231,10 @@ const proxyServer = http.createServer((req, res) => {
 });
 
 async function main() {
-  ensureDir(runtimeRoot);
+  instanceSupervisor.prepare();
   try {
     proxyPort = await listenOnAvailablePort(proxyServer, proxyPort, proxyHost, "GPT Repo MCP Proxy", 0);
-    proxyPublicBaseUrl = localProxyBaseUrl();
-    stopProxyFunnel(currentProxyHttpsPort(), true);
+    funnelController.reconcileOnStartup();
     console.log(`GPT Repo MCP Proxy: http://${proxyHost}:${proxyPort}`);
 
     const actualPanelPort = await listenOnAvailablePort(server, panelPort, host, "GPT Repo MCP Control Panel", 0);
@@ -1396,9 +252,9 @@ async function main() {
 
 await main();
 
-process.on("SIGINT", () => {
-  for (const id of runtime.keys()) stopInstance(id);
-  stopProxyFunnel(currentProxyHttpsPort(), true);
+process.on("SIGINT", async () => {
+  await instanceSupervisor.shutdown();
+  funnelController.shutdown();
   process.exit(0);
 });
 

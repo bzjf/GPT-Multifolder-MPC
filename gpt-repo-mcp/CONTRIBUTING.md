@@ -13,12 +13,12 @@ Run focused checks while developing, then run the relevant broader checks before
 
 ```bash
 npm run typecheck
-npm test -- tests/tool-contracts.test.ts tests/mcp-contract.test.ts
+npm test -- tests/server/tool-contracts.test.ts tests/server/mcp-contract.test.ts
 npm run lint
 npm run build
 ```
 
-Use targeted tests for the area you changed before broad validation.
+All automated and manual test assets live under [`tests/`](tests/README.md). Use targeted tests for the area you changed before broad validation.
 
 ## Safety Rules
 

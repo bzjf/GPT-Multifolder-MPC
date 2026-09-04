@@ -91,12 +91,12 @@ export class ChangePlanService {
 
 function maxFilesForDepth(depth: PlanningDepth = "standard"): number {
   if (depth === "quick") {
-    return 8;
+    return 12;
   }
   if (depth === "deep") {
-    return 30;
+    return 60;
   }
-  return 15;
+  return 30;
 }
 
 function rankRelevantFiles(goal: string, candidates: string[]): string[] {

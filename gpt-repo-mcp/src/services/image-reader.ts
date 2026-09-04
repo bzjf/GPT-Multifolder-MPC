@@ -5,7 +5,7 @@ import { readFilePrefix } from "./bounded-read.js";
 import { IgnoreEngine } from "./ignore-engine.js";
 import { PathSandbox } from "./path-sandbox.js";
 
-const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 
 export type FetchImageOptions = {
   path: string;

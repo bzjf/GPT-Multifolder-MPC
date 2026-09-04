@@ -42,12 +42,14 @@
     "build": "tsup src/server.ts --format esm --dts --clean && tsup src/cli/connect-gpt.ts --format esm --out-dir dist/cli",
     "start": "node dist/server.js",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint .",
+    "lint": "eslint . && npm run lint:control-panel",
+    "lint:control-panel": "node ../scripts/lint-control-panel.mjs",
     "check:public": "node scripts/check-public.mjs",
     "test": "vitest run",
-    "test:smoke": "vitest run tests/mcp-contract.test.ts tests/tool-contracts.test.ts tests/file-reader.test.ts",
-    "verify": "npm run typecheck && npm run build && npm run test:smoke",
-    "verify:full": "npm run typecheck && npm run build && npm test"
+    "test:control-panel": "node --test tests/control-panel/test-all.mjs",
+    "test:smoke": "vitest run tests/server/mcp-contract.test.ts tests/server/tool-contracts.test.ts tests/server/file-reader.test.ts",
+    "verify": "npm run typecheck && npm run build && npm run test:control-panel && npm run test:smoke",
+    "verify:full": "npm run typecheck && npm run build && npm run test:control-panel && npm test"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

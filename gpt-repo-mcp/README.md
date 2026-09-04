@@ -149,7 +149,7 @@ Codex is done. Review the Codex result and the git diff for <repo_id>.
 | Compatibility aliases | `repo_git_stage`, `repo_git_unstage`, `repo_git_commit` |
 | Codex/Claude coordination | `repo_prepare_codex_task`, `repo_write_codex_task`, `repo_codex_review` |
 
-See [docs/TOOL_SURFACE.md](docs/TOOL_SURFACE.md) for full schemas, examples, output shapes, and recommended workflows.
+See [docs/WRITE_WORKFLOWS.md](docs/WRITE_WORKFLOWS.md) for line-edit semantics and copyable write examples.
 
 ## Codex/Claude Task Flow
 
@@ -233,7 +233,9 @@ The HTTP runtime hides the legacy `repo_git_stage`, `repo_git_unstage`, and `rep
 | `npm run add -- <path> --mode <mode>` | Add a repository root with explicit `read`, `write`, or `ship` mode. |
 | `npm run remove -- <repo_id>` | Remove an approved repository root. |
 | `npm run check:config` | Validate local config. |
-| `npm test -- tests/tool-contracts.test.ts tests/mcp-contract.test.ts` | Run focused MCP contract checks. |
+| `npm test -- tests/server/tool-contracts.test.ts tests/server/mcp-contract.test.ts` | Run focused MCP contract checks. |
+| `npm run test:control-panel` | Run the control-panel Node test suite. |
+| `npm run verify:full` | Run the complete automated acceptance suite. |
 
 ## Requirements
 
@@ -254,13 +256,14 @@ New to ngrok? See [Install ngrok from zero](docs/SETUP.md#install-ngrok-from-zer
 - [Write workflows](docs/WRITE_WORKFLOWS.md)
 - [Security model](docs/SECURITY.md)
 - [Release checklist](docs/RELEASE_CHECKLIST.md)
+- [Tests and manual cases](tests/README.md)
 
 ## Troubleshooting
 
 - Unknown `repo_id`: run `npm run list`.
 - Connector URL changed: restart `npm run connect` and update ChatGPT Developer Mode with the new printed URL.
 - Write blocked: ask ChatGPT to run `repo_policy_explain` for the repo id and path.
-- Schema mismatch: refresh ChatGPT Developer Mode and run `npm test -- tests/mcp-contract.test.ts tests/tool-contracts.test.ts`.
+- Schema mismatch: refresh ChatGPT Developer Mode and run `npm test -- tests/server/mcp-contract.test.ts tests/server/tool-contracts.test.ts`.
 - Tunnel 502: confirm the local server is running, check `/health`, then restart ngrok or try a fresh tunnel.
 
 ## License

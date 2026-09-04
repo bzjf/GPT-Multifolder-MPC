@@ -7,13 +7,13 @@ export const EditContextInputSchema = RepoInputSchema
   .merge(GlobScopeSchema)
   .extend({
     goal: z.string().min(1).describe("Short description of the edit or bugfix the caller is preparing."),
-    search_queries: z.array(z.string().min(1)).max(5).optional().describe("Exact identifiers, error text, function names, or file words to search before reading files. Omit only when known_paths or include_globs are enough."),
-    known_paths: z.array(z.string().min(1)).max(20).optional().describe("Repo-relative POSIX files already known to be relevant. These are read before search-derived candidates."),
-    max_search_results_per_query: z.number().int().positive().max(20).optional().describe("Maximum search hits to keep per query before selecting candidate files."),
-    max_files_to_read: z.number().int().positive().max(20).optional().describe("Maximum candidate files to read in the bundled repo_read_many step."),
+    search_queries: z.array(z.string().min(1)).max(10).optional().describe("Exact identifiers, error text, function names, or file words to search before reading files. Omit only when known_paths or include_globs are enough."),
+    known_paths: z.array(z.string().min(1)).max(50).optional().describe("Repo-relative POSIX files already known to be relevant. These are read before search-derived candidates."),
+    max_search_results_per_query: z.number().int().positive().optional().describe("Maximum search hits to keep per query before selecting candidate files, capped by the server max_search_results limit."),
+    max_files_to_read: z.number().int().positive().optional().describe("Maximum candidate files to read in the bundled repo_read_many step, capped by the server max_files limit."),
     max_bytes_per_file: z.number().int().positive().optional().describe("Per-file read budget for bundled file contents, capped by server configuration."),
     max_total_bytes: z.number().int().positive().optional().describe("Total read budget for bundled file contents, capped by server configuration."),
-    context_lines: z.number().int().min(0).max(2).optional().describe("Search context lines per match. Keep low because file contents are read separately.")
+    context_lines: z.number().int().min(0).max(5).optional().describe("Search context lines per match. Keep low because file contents are read separately.")
   });
 
 export const EditContextSearchSchema = z.object({

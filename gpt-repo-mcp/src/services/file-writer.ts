@@ -443,18 +443,19 @@ type LineEditInput = {
 
 function applyGroupedEdits(text: string, edits: WriteGroupedEditChange["edits"], repoPath: string): string {
   const lineEnding = detectPreferredLineEnding(text);
+  const lineEditCount = edits.filter((edit) => isLineEditKind(edit.type)).length;
+  if (lineEditCount > 0 && lineEditCount !== edits.length) {
+    throw new RepoReaderError(
+      "VALIDATION_ERROR",
+      `Grouped edits for ${repoPath} cannot mix line-number edits with exact-text edits; use one coordinate system per file.`
+    );
+  }
+  if (lineEditCount === edits.length) {
+    return applyGroupedLineEdits(text, edits, repoPath, lineEnding);
+  }
+
   let nextText = normalizeLineEndings(text, lineEnding);
   for (const edit of edits) {
-    if (isLineEditKind(edit.type)) {
-      nextText = applyLineEdit(nextText, {
-        type: edit.type,
-        start_line: edit.start_line,
-        end_line: edit.end_line,
-        content: edit.content
-      }, repoPath, lineEnding);
-      continue;
-    }
-
     const find = normalizeLineEndings(requireGroupedFind(edit, repoPath), lineEnding);
     assertFindAppearsExactlyOnce(nextText, find, repoPath);
     if (edit.type === "replace") {
@@ -466,6 +467,64 @@ function applyGroupedEdits(text: string, edits: WriteGroupedEditChange["edits"],
       const index = nextText.indexOf(find) + find.length;
       nextText = nextText.slice(0, index) + normalizeLineEndings(requireGroupedContent(edit), lineEnding) + nextText.slice(index);
     }
+  }
+  return nextText;
+}
+
+function applyGroupedLineEdits(
+  text: string,
+  edits: WriteGroupedEditChange["edits"],
+  repoPath: string,
+  lineEnding: LineEnding
+): string {
+  const originalLineCount = splitLineState(text, lineEnding).lines.length;
+  const planned = edits.map((edit, index) => {
+    if (!isLineEditKind(edit.type)) {
+      throw new RepoReaderError("INTERNAL_ERROR", `Expected a line-number edit for ${repoPath}.`);
+    }
+    const lineEdit: LineEditInput = {
+      type: edit.type,
+      start_line: edit.start_line,
+      end_line: edit.end_line,
+      content: edit.content
+    };
+    const startLine = requireStartLine(lineEdit, repoPath);
+    const endLine = lineEdit.type === "replace_lines" ? lineEdit.end_line ?? startLine : startLine;
+    if (endLine < startLine) {
+      throw new RepoReaderError("VALIDATION_ERROR", `end_line must be greater than or equal to start_line for ${repoPath}.`);
+    }
+    assertLineExists(startLine, originalLineCount, repoPath);
+    assertLineExists(endLine, originalLineCount, repoPath);
+    requireLineEditContent(lineEdit, repoPath);
+    return {
+      index,
+      startLine,
+      endLine,
+      edit: {
+        type: lineEdit.type,
+        start_line: startLine,
+        end_line: lineEdit.end_line,
+        content: lineEdit.content
+      } satisfies LineEditInput
+    };
+  });
+
+  const ascending = [...planned].sort((left, right) => left.startLine - right.startLine || left.index - right.index);
+  for (let index = 1; index < ascending.length; index += 1) {
+    const previous = ascending[index - 1];
+    const current = ascending[index];
+    if (previous && current && current.startLine <= previous.endLine) {
+      throw new RepoReaderError(
+        "VALIDATION_ERROR",
+        `Grouped line edits overlap at original line ${current.startLine} in ${repoPath}; each original line may be targeted once.`
+      );
+    }
+  }
+
+  let nextText = normalizeLineEndings(text, lineEnding);
+  const bottomUp = [...planned].sort((left, right) => right.startLine - left.startLine || right.index - left.index);
+  for (const item of bottomUp) {
+    nextText = applyLineEdit(nextText, item.edit, repoPath, lineEnding);
   }
   return nextText;
 }

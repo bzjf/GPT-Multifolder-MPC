@@ -220,7 +220,8 @@ export class FileReader {
       text,
       byte_start: window.byte_start,
       byte_end: window.byte_end,
-      ...(totalLines !== undefined ? { total_lines: totalLines, start_line: 1, end_line: Math.max(1, totalLines) } : {}),
+      ...(totalLines !== undefined ? { total_lines: totalLines } : {}),
+      ...(totalLines !== undefined && totalLines > 0 ? { start_line: 1, end_line: totalLines } : {}),
       truncated: window.has_more
     };
   }
@@ -360,10 +361,8 @@ export class FileReader {
 
       if (!stopped) {
         pending += finishUtf8Decode(decoder);
-        if (pending.length > 0 || lastByte !== 0x0a) {
+        if (pending.length > 0 || (scannedBytes > 0 && lastByte !== 0x0a)) {
           acceptLine(discardingSkippedLine ? "" : pending);
-        } else {
-          acceptLine("");
         }
         reachedEof = true;
       }
@@ -486,7 +485,9 @@ function lineScanLimitError(maxLineScanBytes: number): RepoReaderError {
 }
 
 function countLines(text: string): number {
-  return text.split(/\r?\n/).length;
+  if (text.length === 0) return 0;
+  const newlineCount = (text.match(/\n/g) ?? []).length;
+  return newlineCount + (text.endsWith("\n") ? 0 : 1);
 }
 
 function requireCursorPosition(value: number | undefined, field: string): number {

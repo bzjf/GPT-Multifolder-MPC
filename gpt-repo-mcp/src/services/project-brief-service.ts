@@ -8,10 +8,10 @@ import { readFilePrefix } from "./bounded-read.js";
 import type { ProjectBriefInclude, ProjectBriefInput } from "../contracts/project.contract.js";
 
 const DEFAULT_INCLUDE: ProjectBriefInclude[] = ["package", "readme", "architecture", "scripts", "recent_git", "todos"];
-const MAX_DOCS = 5;
-const MAX_ENTRYPOINTS = 12;
-const MAX_SCRIPTS = 20;
-const MAX_TREE_ENTRIES = 500;
+const MAX_DOCS = 10;
+const MAX_ENTRYPOINTS = 24;
+const MAX_SCRIPTS = 40;
+const MAX_TREE_ENTRIES = 2_000;
 
 type ProjectBriefOptions = Omit<ProjectBriefInput, "repo_id">;
 

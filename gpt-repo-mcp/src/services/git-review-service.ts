@@ -7,7 +7,7 @@ import { OperationsPolicy } from "./operations-policy.js";
 type StatusFile = GitReviewResult["changed_paths"][number];
 
 const STAGED_RECOVERY_WARNING = "STAGED_RECOVERY_REQUIRES_UNSTAGE_FIRST";
-const DEFAULT_COMPACT_SUMMARY_FILES = 50;
+const DEFAULT_COMPACT_SUMMARY_FILES = 100;
 const STAGED_RECOVERY_GUIDANCE = [
   "Staged paths cannot be restored directly with repo_git_restore_paths because restore is worktree-only.",
   "For bad staged changes, use repo_write_recover with the review-provided unstage_paths and restore_paths, or use repo_write_unstage first when granular control is needed.",
