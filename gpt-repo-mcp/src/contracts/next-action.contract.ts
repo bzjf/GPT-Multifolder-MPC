@@ -18,8 +18,8 @@ export const NextActionToolHintSchema = z.enum([
 ]);
 
 export const NextActionInputSchema = RepoInputSchema.extend({
-  mode: NextActionModeSchema.optional(),
-  horizon: NextActionHorizonSchema.optional()
+  mode: NextActionModeSchema.optional().describe("Kind of recommendation to prioritize: ship, cleanup, plan, debug, or refactor. Defaults to plan. Example: \"debug\"."),
+  horizon: NextActionHorizonSchema.optional().describe("Planning time horizon used in the recommendation rationale: today, this_week, or next_milestone. Defaults to today.")
 });
 
 export const NextActionResultSchema = z.object({

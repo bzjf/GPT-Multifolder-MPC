@@ -21,6 +21,7 @@ describe("RootRegistry", () => {
       max_change_plan_files: 60,
       max_change_plan_tree_pages: 10,
       max_depth: 12,
+      default_diff_bytes: 32_000,
       max_diff_bytes: 512_000
     });
   });
@@ -43,6 +44,7 @@ describe("RootRegistry", () => {
       max_change_plan_files: 53,
       max_change_plan_tree_pages: 59,
       max_depth: 61,
+      default_diff_bytes: 63,
       max_diff_bytes: 67
     };
 

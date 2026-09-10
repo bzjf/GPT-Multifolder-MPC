@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, test } from "vitest";
+import { DEFAULT_LIMITS } from "../../src/policies/limits.js";
 import { RepoReaderError } from "../../src/runtime/errors.js";
 import { GitService } from "../../src/services/git-service.js";
 
@@ -105,8 +106,47 @@ describe("GitService", () => {
 
     expect(result.truncated).toBe(true);
     expect(result.warnings).toEqual([
-      "Diff truncated by max_bytes (120). Increase max_bytes or pass paths to narrow the diff before reviewing."
+      "Diff truncated by max_bytes (120). Prefer paths to narrow the diff, or increase max_bytes up to 512000."
     ]);
+  });
+
+  test("uses a compact default while retaining a larger hard limit", async () => {
+    const diff = [
+      "diff --git a/src/app.ts b/src/app.ts",
+      "--- a/src/app.ts",
+      "+++ b/src/app.ts",
+      "@@ -1 +1 @@",
+      `+${"x".repeat(80)}`
+    ].join("\n");
+    const service = new GitService("unused", async () => diff, {
+      ...DEFAULT_LIMITS,
+      default_diff_bytes: 80,
+      max_diff_bytes: 200
+    });
+
+    const compact = await service.diff({});
+    const expanded = await service.diff({ max_bytes: 200 });
+
+    expect(compact.truncated).toBe(true);
+    expect(compact.warnings[0]).toContain("increase max_bytes up to 200");
+    expect(expanded.truncated).toBe(false);
+  });
+
+  test("truncates multibyte diffs on a valid UTF-8 byte boundary", async () => {
+    const diff = [
+      "diff --git a/docs/a.md b/docs/a.md",
+      "--- a/docs/a.md",
+      "+++ b/docs/a.md",
+      "@@ -1 +1 @@",
+      "+中文内容"
+    ].join("\n");
+    const service = new GitService("unused", async () => diff);
+
+    const result = await service.diff({ max_bytes: Buffer.byteLength(diff) - 1 });
+    const serializedHunks = result.files.flatMap((file) => file.hunks).join("\n");
+
+    expect(result.truncated).toBe(true);
+    expect(serializedHunks).not.toContain("�");
   });
 });
 

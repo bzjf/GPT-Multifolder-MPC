@@ -5,7 +5,7 @@ export const DecisionSourceSchema = z.enum(["docs", "readme", "agents", "comment
 export const ConfidenceSchema = z.enum(["low", "medium", "high"]);
 
 export const DecisionLogInputSchema = RepoInputSchema.extend({
-  include_sources: z.array(DecisionSourceSchema).optional()
+  include_sources: z.array(DecisionSourceSchema).optional().describe("Repository evidence sources to inspect. Omit to use docs, readme, agents, and package; comments are opt-in. Example: [\"docs\", \"agents\"].")
 });
 
 export const DecisionEvidenceSchema = z.object({

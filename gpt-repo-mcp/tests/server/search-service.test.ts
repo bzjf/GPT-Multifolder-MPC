@@ -55,6 +55,33 @@ describe("SearchService", () => {
     expect(result.returned_count).toBe(1);
   });
 
+  test("searches compatible queries as one ordered batch", async () => {
+    const fixture = await createRepoFixture();
+    const service = new SearchService(fixture.root, new PathSandbox(fixture.root));
+
+    const results = await service.searchMany([
+      { query: "rawFetch", include_globs: ["src/**/*.ts"] },
+      { query: "controller", include_globs: ["src/**/*.ts"] }
+    ]);
+
+    expect(results).toHaveLength(2);
+    expect(results[0]?.results.map((match) => match.path)).toEqual(["src/app.ts"]);
+    expect(results[1]?.results.map((match) => match.path)).toEqual(["src/controllers.ts"]);
+  });
+
+  test("keeps independent scopes when a query batch cannot share one scan", async () => {
+    const fixture = await createRepoFixture();
+    const service = new SearchService(fixture.root, new PathSandbox(fixture.root));
+
+    const results = await service.searchMany([
+      { query: "Guide", include_globs: ["docs/**/*.md"] },
+      { query: "rawFetch", include_globs: ["src/**/*.ts"] }
+    ]);
+
+    expect(results[0]?.results.map((match) => match.path)).toEqual(["docs/guide.md"]);
+    expect(results[1]?.results.map((match) => match.path)).toEqual(["src/app.ts"]);
+  });
+
   test("paginates deterministic results with cursor", async () => {
     const fixture = await createRepoFixture();
     const service = new SearchService(fixture.root, new PathSandbox(fixture.root));

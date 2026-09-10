@@ -42,6 +42,12 @@ describe("MCP contract", () => {
       expect(SERVER_INSTRUCTIONS).toContain("required, not merely preferred");
       expect(SERVER_INSTRUCTIONS).toContain("Do not use or simulate apply_patch");
       expect(SERVER_INSTRUCTIONS).toContain("original pre-edit file snapshot");
+      expect(SERVER_INSTRUCTIONS).toContain("may mix replace_lines, insert_before_line, and insert_after_line");
+      expect(SERVER_INSTRUCTIONS).toContain("cannot contain write, append, prepend");
+      expect(SERVER_INSTRUCTIONS).toContain("Keep every MCP goal concise");
+      expect(SERVER_INSTRUCTIONS).toContain("For repo_edit_context goal");
+      expect(SERVER_INSTRUCTIONS).toContain("brief 2-8 word search intent");
+      expect(SERVER_INSTRUCTIONS).toContain("repo_change_plan and handoff step goals");
     } finally {
       await close();
     }
@@ -75,7 +81,55 @@ describe("MCP contract", () => {
         "insert_before_line",
         "insert_after_line"
       ]);
+      expect(actionSchema?.enum).not.toEqual(expect.arrayContaining([
+        "replace",
+        "insert_before",
+        "insert_after"
+      ]));
       expect(actionSchema?.description).toContain("current lines were read");
+      expect(actionSchema?.description).toContain("discard all earlier line coordinates");
+      expect(actionSchema?.description).toContain("re-read before another line-number write");
+
+      const writeFileStartLineSchema = writeFile?.inputSchema.properties?.start_line as {
+        description?: string;
+      } | undefined;
+      expect(writeFileStartLineSchema?.description).toContain("after the last successful write");
+      expect(writeFileStartLineSchema?.description).toContain("re-read instead of manually offsetting");
+
+      const writeFileEndLineSchema = writeFile?.inputSchema.properties?.end_line as {
+        description?: string;
+      } | undefined;
+      expect(writeFileEndLineSchema?.description).toContain("same fresh file snapshot as start_line");
+      expect(writeFileEndLineSchema?.description).toContain("becomes stale after any successful write");
+
+      const editContext = listed.tools.find((tool) => tool.name === "repo_edit_context");
+      const editContextGoalSchema = editContext?.inputSchema.properties?.goal as {
+        maxLength?: number;
+        description?: string;
+      } | undefined;
+      expect(editContextGoalSchema?.maxLength).toBe(120);
+      expect(editContextGoalSchema?.description).toContain("ideally 2-8 words");
+      expect(editContextGoalSchema?.description).toContain("omit background");
+
+      const changePlan = listed.tools.find((tool) => tool.name === "repo_change_plan");
+      const changePlanGoalSchema = changePlan?.inputSchema.properties?.goal as {
+        description?: string;
+      } | undefined;
+      expect(changePlanGoalSchema?.description).toContain("Concise one-sentence planning target");
+      expect(changePlanGoalSchema?.description).toContain("directly affects file ranking");
+
+      const writeChanges = listed.tools.find((tool) => tool.name === "repo_write_changes");
+      const writeChangesSchema = JSON.stringify(writeChanges?.inputSchema);
+      expect(writeChangesSchema).toContain("Closed allowlist");
+      expect(writeChangesSchema).toContain("type must be exactly replace_lines, insert_before_line, or insert_after_line");
+      expect(writeChangesSchema).toContain("any combination of those three may be bundled");
+      expect(writeChangesSchema).toContain("Forbidden child types include write, append, prepend");
+      expect(writeChangesSchema).toContain("including two insertions anchored to the same line");
+      expect(writeChangesSchema).toContain("as many currently known, safely planned, non-overlapping edits from the current file snapshot as possible");
+      expect(writeChangesSchema).toContain("Do not split known edits into serial write-and-re-read calls merely to recalculate shifted line numbers");
+      expect(writeChangesSchema).toContain("discard every coordinate from earlier reads");
+      expect(writeChangesSchema).toContain("only for work that could not be safely planned from the original snapshot");
+      expect(writeChangesSchema).toContain("earlier coordinates are stale");
     } finally {
       await close();
     }
@@ -287,7 +341,7 @@ describe("MCP contract", () => {
               "openWorldHint": false,
               "readOnlyHint": true,
             },
-            "description": "Use this when the user asks to edit, fix, debug, or implement code and likely files are not fully known. Combines bounded search, candidate selection, batched repo_read_many file reads, and git HEAD in one read-only call so the next step can usually be repo_write_changes.",
+            "description": "Use this when the user asks to edit, fix, debug, or implement code and likely files are not fully known. Batches compatible queries into one repository scan, ranks candidates, returns a compact first page of file contents, and includes git HEAD so the next step can usually be repo_write_changes.",
             "inputKeys": [
               "context_lines",
               "exclude_globs",
@@ -440,7 +494,7 @@ describe("MCP contract", () => {
               "openWorldHint": false,
               "readOnlyHint": true,
             },
-            "description": "Use this when the user asks to review changes or inspect a git diff. Default first call should pass only repo_id. Do not include staged, unstaged, paths, max_bytes, or context_lines on the first pass. Use optional filters only after the default diff is truncated, too broad, or the user asks for a specific comparison.",
+            "description": "Use this when the user asks to inspect git changes. Prefer repo_git_status first to obtain changed paths, then call repo_git_diff repeatedly with small coherent paths batches, usually 1-5 related files per call. Do not request one whole-repository diff when multiple changed paths are known. Omit paths only when status shows very few changed files or the user explicitly requests the whole comparison. Keep the compact default max_bytes; if truncated, reduce the path batch before increasing max_bytes.",
             "inputKeys": [
               "base",
               "compare",
@@ -1063,7 +1117,7 @@ describe("MCP contract", () => {
               "openWorldHint": false,
               "readOnlyHint": false,
             },
-            "description": "Use this when the user explicitly asks to apply a cohesive multi-file edit pack. Existing text with known lines must use line-number actions, not apply_patch-shaped exact-text edits. Grouped line coordinates all refer to the original pre-edit snapshot; the server applies non-overlapping edits bottom-up. Preserves CRLF/LF style. Requires user approval, repo opt-in, and never runs shell, git, stage, commit, or restore.",
+            "description": "Use this when the user explicitly asks to apply a cohesive multi-file edit pack. Each path may appear once. Before writing, batch as many currently known, safely planned, non-overlapping line edits for one existing file as possible into one top-level type=edit group; do not alternate one known edit with a re-read merely to shift line numbers. Its edits array accepts exactly replace_lines, insert_before_line, and insert_after_line; any combination of those three may be bundled, up to 25. No other child type is valid: write, append, prepend, exact-text actions, nested edit groups, file creation, and another path are forbidden. All coordinates come from the same original pre-edit snapshot; target lines or ranges cannot overlap, including two insertions at the same line, and the server applies edits bottom-up. Re-read after writing only for work that could not be planned safely in the original group or when verification finds a new issue. Preserves CRLF/LF style. Requires user approval, repo opt-in, and never runs shell, git, stage, commit, or restore.",
             "inputKeys": [
               "changes",
               "dry_run",
@@ -1166,7 +1220,7 @@ describe("MCP contract", () => {
           changes: [
             { type: "write", path: "docs/applied-a.md", content: "A\n" },
             { type: "append", path: "docs/ARCHITECTURE.md", content: "Applied\n" },
-            { type: "replace", path: "src/app.ts", find: "missingNeedle", replace: "safeFetch" }
+            { type: "replace_lines", path: "src/app.ts", start_line: 9999, content: "safeFetch" }
           ]
         }
       });
@@ -1174,7 +1228,7 @@ describe("MCP contract", () => {
       expect(result.isError).toBe(true);
       expect(result.structuredContent).toBeUndefined();
       expect(result._meta?.error).toMatchObject({
-        code: "WRITE_FIND_NOT_FOUND",
+        code: "VALIDATION_ERROR",
         retryable: false
       });
       const serialized = JSON.stringify(result);
@@ -1456,8 +1510,8 @@ function representativeCalls(head: string): Record<string, Record<string, unknow
         type: "edit",
         path: "docs/ARCHITECTURE.md",
         edits: [
-          { type: "replace", find: "Decision: keep tools read-only.", replace: "Decision: keep tools safe by default." },
-          { type: "insert_after", find: "Convention: use contracts first.", content: "\nConvention: review grouped edits through git." }
+          { type: "replace_lines", start_line: 2, content: "Decision: keep tools safe by default." },
+          { type: "insert_after_line", start_line: 3, content: "Convention: review grouped edits through git." }
         ]
       }
     ],

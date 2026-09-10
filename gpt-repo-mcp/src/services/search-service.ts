@@ -44,9 +44,19 @@ type SearchResponse = {
   next_cursor?: string;
   warnings: string[];
 };
-type RipgrepAttempt = {
-  scan?: BackendScan;
+type RipgrepManyAttempt = {
+  scans?: BackendScan[];
   fallbackWarning?: string;
+};
+
+type PreparedSearch = {
+  options: SearchOptions;
+  matcher: { column: (line: string) => number | undefined };
+  maxResults: number;
+  contextLines: number;
+  start: number;
+  stopAfter: number;
+  cacheKey: string;
 };
 
 const FALLBACK_TREE_PAGE_SIZE = 512;
@@ -68,26 +78,51 @@ export class SearchService {
   constructor(private readonly root: string, private readonly sandbox: PathSandbox, private readonly limits: RuntimeLimits = DEFAULT_LIMITS) {}
 
   async search(options: SearchOptions): Promise<SearchResponse> {
-    const matcher = createMatcher(options);
-    const maxResults = Math.min(options.max_results ?? this.limits.max_search_results, this.limits.max_search_results);
-    const contextLines = Math.min(options.context_lines ?? 0, 5);
-    const start = parseCursor(options.cursor);
-    const stopAfter = start + maxResults + 1;
-    const generation = getRepoCacheGeneration(this.root);
-    const cacheKey = searchCacheKey(this.root, options, maxResults, contextLines, start);
-    const cached = searchCache.get(cacheKey);
-    if (cached && cached.generation === generation && cached.expiresAt > Date.now()) {
-      return cached.result;
+    return (await this.searchMany([options]))[0]!;
+  }
+
+  async searchMany(optionsList: SearchOptions[]): Promise<SearchResponse[]> {
+    if (optionsList.length === 0) return [];
+    if (!canBatchSearchOptions(optionsList)) {
+      return mapWithConcurrency(optionsList, 3, (options) => this.search(options));
     }
 
+    const generation = getRepoCacheGeneration(this.root);
+    const results = new Array<SearchResponse>(optionsList.length);
+    const pending: Array<{ index: number; prepared: PreparedSearch }> = [];
+
+    for (const [index, options] of optionsList.entries()) {
+      const prepared = prepareSearch(this.root, options, this.limits);
+      const cached = searchCache.get(prepared.cacheKey);
+      if (cached && cached.generation === generation && cached.expiresAt > Date.now()) {
+        results[index] = cached.result;
+      } else {
+        pending.push({ index, prepared });
+      }
+    }
+
+    if (pending.length === 0) return results;
+
     this.fastPathEligibility.clear();
-    const ripgrep = await this.tryRipgrep(options, stopAfter);
-    const scan = ripgrep.scan ?? await this.searchWithTypescript(options, matcher, stopAfter, ripgrep.fallbackWarning);
+    const preparedSearches = pending.map((item) => item.prepared);
+    const ripgrep = await this.tryRipgrepMany(preparedSearches);
+    const scans = ripgrep.scans ?? await this.searchManyWithTypescript(preparedSearches, ripgrep.fallbackWarning);
+    for (const [pendingIndex, item] of pending.entries()) {
+      results[item.index] = await this.finalizeSearch(item.prepared, scans[pendingIndex]!, generation);
+    }
+    return results;
+  }
+
+  private async finalizeSearch(
+    prepared: PreparedSearch,
+    scan: BackendScan,
+    generation: number
+  ): Promise<SearchResponse> {
     scan.matches.sort(compareMatches);
 
-    const selected = scan.matches.slice(start, start + maxResults);
-    const results = await this.addContext(selected, contextLines);
-    const nextIndex = start + results.length;
+    const selected = scan.matches.slice(prepared.start, prepared.start + prepared.maxResults);
+    const results = await this.addContext(selected, prepared.contextLines);
+    const nextIndex = prepared.start + results.length;
     const truncated = scan.matches.length > nextIndex;
     const warnings = [...scan.warnings];
     if (!scan.scanComplete && !warnings.includes("MATCH_COUNT_LOWER_BOUND")) {
@@ -103,7 +138,7 @@ export class SearchService {
       ...(truncated ? { next_cursor: String(nextIndex) } : {}),
       warnings
     };
-    searchCache.set(cacheKey, {
+    searchCache.set(prepared.cacheKey, {
       generation,
       expiresAt: Date.now() + SEARCH_CACHE_TTL_MS,
       result
@@ -112,25 +147,25 @@ export class SearchService {
     return result;
   }
 
-  private async tryRipgrep(options: SearchOptions, stopAfter: number): Promise<RipgrepAttempt> {
+  private async tryRipgrepMany(prepared: PreparedSearch[]): Promise<RipgrepManyAttempt> {
     if (Date.now() < ripgrepUnavailableUntil) {
       return { fallbackWarning: "RIPGREP_UNAVAILABLE_FALLBACK" };
     }
 
     return new Promise((resolve) => {
-      const args = buildRipgrepArgs(options);
+      const args = buildRipgrepManyArgs(prepared);
       const child = spawn("rg", args, {
         cwd: this.root,
         shell: false,
         windowsHide: true,
         stdio: ["ignore", "pipe", "pipe"]
       });
-      const matches: SearchMatch[] = [];
-      let pending = "";
+      const scans = prepared.map<BackendScan>(() => ({ matches: [], scanComplete: true, warnings: [] }));
+      let pendingOutput = "";
       let intentionallyStopped = false;
       let settled = false;
 
-      const finish = (attempt: RipgrepAttempt): void => {
+      const finish = (attempt: RipgrepManyAttempt): void => {
         if (settled) return;
         settled = true;
         resolve(attempt);
@@ -139,21 +174,30 @@ export class SearchService {
       const processLine = (line: string): void => {
         if (!line || intentionallyStopped) return;
         const match = parseRipgrepMatch(line);
-        if (!match || !this.isAllowedFastPath(match.path, options)) return;
-        matches.push(match);
-        if (matches.length >= stopAfter) {
+        if (!match) return;
+
+        for (const [index, search] of prepared.entries()) {
+          const scan = scans[index]!;
+          if (scan.matches.length >= search.stopAfter || !this.isAllowedFastPath(match.path, search.options)) continue;
+          const column = search.matcher.column(match.text);
+          if (column === undefined) continue;
+          scan.matches.push({ ...match, column });
+          if (scan.matches.length >= search.stopAfter) scan.scanComplete = false;
+        }
+
+        if (scans.every((scan, index) => scan.matches.length >= prepared[index]!.stopAfter)) {
           intentionallyStopped = true;
           child.kill();
         }
       };
 
       child.stdout?.on("data", (chunk: Buffer | string) => {
-        pending += chunk.toString();
-        let newline = pending.indexOf("\n");
+        pendingOutput += chunk.toString();
+        let newline = pendingOutput.indexOf("\n");
         while (newline >= 0) {
-          processLine(pending.slice(0, newline));
-          pending = pending.slice(newline + 1);
-          newline = pending.indexOf("\n");
+          processLine(pendingOutput.slice(0, newline));
+          pendingOutput = pendingOutput.slice(newline + 1);
+          newline = pendingOutput.indexOf("\n");
         }
       });
 
@@ -168,13 +212,9 @@ export class SearchService {
       });
       child.on("close", (code) => {
         if (settled) return;
-        if (pending) processLine(pending);
-        if (intentionallyStopped) {
-          finish({ scan: { matches, scanComplete: false, warnings: [] } });
-          return;
-        }
-        if (code === 0 || code === 1) {
-          finish({ scan: { matches, scanComplete: true, warnings: [] } });
+        if (pendingOutput) processLine(pendingOutput);
+        if (intentionallyStopped || code === 0 || code === 1) {
+          finish({ scans });
           return;
         }
         finish({ fallbackWarning: "RIPGREP_FAILED_FALLBACK" });
@@ -184,7 +224,8 @@ export class SearchService {
 
   private isAllowedFastPath(path: string, options: SearchOptions): boolean {
     const normalized = normalizeRepoPath(path);
-    const cached = this.fastPathEligibility.get(normalized);
+    const cacheKey = `${batchScopeKey(options)}\u0000${normalized}`;
+    const cached = this.fastPathEligibility.get(cacheKey);
     if (cached !== undefined) return cached;
 
     const allowed = Boolean(normalized)
@@ -196,22 +237,23 @@ export class SearchService {
       && isIncluded(normalized, options.include_globs)
       && !isExcludedByGlob(normalized, options.exclude_globs)
       && !isInsideNestedRepository(this.root, normalized);
-    this.fastPathEligibility.set(normalized, allowed);
+    this.fastPathEligibility.set(cacheKey, allowed);
     return allowed;
   }
 
-  private async searchWithTypescript(
-    options: SearchOptions,
-    matcher: { column: (line: string) => number | undefined },
-    stopAfter: number,
+  private async searchManyWithTypescript(
+    prepared: PreparedSearch[],
     fallbackWarning?: string
-  ): Promise<BackendScan> {
+  ): Promise<BackendScan[]> {
     const treeService = new RepoTreeService(this.root, this.sandbox, this.limits);
-    const matches: SearchMatch[] = [];
+    const scans = prepared.map<BackendScan>(() => ({
+      matches: [],
+      scanComplete: true,
+      warnings: [fallbackWarning ?? "SEARCH_BACKEND_TYPESCRIPT"]
+    }));
     let treeCursor: string | undefined;
-    let scanComplete = true;
 
-    while (matches.length < stopAfter) {
+    while (true) {
       const tree = await treeService.tree({
         include_files: true,
         respect_default_excludes: true,
@@ -219,42 +261,45 @@ export class SearchService {
         cursor: treeCursor
       });
 
+      let allSearchesSaturated = false;
       for (const entry of tree.entries) {
-        if (entry.type !== "file") continue;
-        if (!isIncluded(entry.path, options.include_globs) || isExcludedByGlob(entry.path, options.exclude_globs)) continue;
-        if (this.ignoreEngine.isSensitiveCandidate(entry.path)) continue;
+        if (entry.type !== "file" || this.ignoreEngine.isSensitiveCandidate(entry.path)) continue;
+        const eligibleSearches = prepared
+          .map((search, index) => ({ search, index }))
+          .filter(({ search, index }) => scans[index]!.matches.length < search.stopAfter)
+          .filter(({ search }) => isIncluded(entry.path, search.options.include_globs))
+          .filter(({ search }) => !isExcludedByGlob(entry.path, search.options.exclude_globs));
+        if (eligibleSearches.length === 0) continue;
 
         const resolved = await this.sandbox.resolve(entry.path);
         const classification = await this.classifier.classify(entry.path, resolved.absolutePath, resolved.stat);
         if (classification.is_binary) continue;
-        const text = await readFile(resolved.absolutePath, "utf8");
-        const lines = text.split(/\r?\n/);
-        for (let index = 0; index < lines.length; index += 1) {
-          const lineText = lines[index] ?? "";
-          const column = matcher.column(lineText);
-          if (column === undefined) continue;
-          matches.push({ path: entry.path, line: index + 1, column, text: lineText });
-          if (matches.length >= stopAfter) {
-            scanComplete = false;
-            break;
+        const lines = (await readFile(resolved.absolutePath, "utf8")).split(/\r?\n/);
+        for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+          const text = lines[lineIndex] ?? "";
+          for (const { search, index } of eligibleSearches) {
+            const scan = scans[index]!;
+            if (scan.matches.length >= search.stopAfter) continue;
+            const column = search.matcher.column(text);
+            if (column === undefined) continue;
+            scan.matches.push({ path: entry.path, line: lineIndex + 1, column, text });
+            if (scan.matches.length >= search.stopAfter) scan.scanComplete = false;
           }
         }
-        if (!scanComplete) break;
+
+        allSearchesSaturated = scans.every((scan, index) => scan.matches.length >= prepared[index]!.stopAfter);
+        if (allSearchesSaturated) break;
       }
 
-      if (!scanComplete || !tree.truncated) break;
+      if (allSearchesSaturated || !tree.truncated) break;
       treeCursor = tree.next_cursor;
       if (!treeCursor) {
-        scanComplete = false;
+        for (const scan of scans) scan.scanComplete = false;
         break;
       }
     }
 
-    return {
-      matches,
-      scanComplete,
-      warnings: [fallbackWarning ?? "SEARCH_BACKEND_TYPESCRIPT"]
-    };
+    return scans;
   }
 
   private async addContext(matches: SearchMatch[], contextLines: number) {
@@ -281,7 +326,8 @@ export class SearchService {
   }
 }
 
-function buildRipgrepArgs(options: SearchOptions): string[] {
+function buildRipgrepManyArgs(prepared: PreparedSearch[]): string[] {
+  const first = prepared[0]!.options;
   const args = [
     "--json",
     "--hidden",
@@ -291,12 +337,62 @@ function buildRipgrepArgs(options: SearchOptions): string[] {
     "--sort=path",
     "--color=never"
   ];
-  if (options.mode !== "regex") args.push("--fixed-strings");
+  if (first.mode !== "regex") args.push("--fixed-strings");
   for (const glob of DEFAULT_EXCLUDES) args.push("--glob", `!${glob}`);
-  for (const glob of options.include_globs ?? []) args.push("--glob", glob);
-  for (const glob of options.exclude_globs ?? []) args.push("--glob", `!${glob}`);
-  args.push("--", options.query, ".");
+  for (const glob of first.include_globs ?? []) args.push("--glob", glob);
+  for (const glob of first.exclude_globs ?? []) args.push("--glob", `!${glob}`);
+  for (const search of prepared) args.push("-e", search.options.query);
+  args.push("--", ".");
   return args;
+}
+
+function prepareSearch(root: string, options: SearchOptions, limits: RuntimeLimits): PreparedSearch {
+  const matcher = createMatcher(options);
+  const maxResults = Math.min(options.max_results ?? limits.max_search_results, limits.max_search_results);
+  const contextLines = Math.min(options.context_lines ?? 0, 5);
+  const start = parseCursor(options.cursor);
+  return {
+    options,
+    matcher,
+    maxResults,
+    contextLines,
+    start,
+    stopAfter: start + maxResults + 1,
+    cacheKey: searchCacheKey(root, options, maxResults, contextLines, start)
+  };
+}
+
+function canBatchSearchOptions(optionsList: SearchOptions[]): boolean {
+  const first = optionsList[0];
+  if (!first) return true;
+  const scope = batchScopeKey(first);
+  return optionsList.every((options) => batchScopeKey(options) === scope);
+}
+
+function batchScopeKey(options: SearchOptions): string {
+  return JSON.stringify({
+    mode: options.mode ?? "literal",
+    include_globs: options.include_globs ?? [],
+    exclude_globs: options.exclude_globs ?? []
+  });
+}
+
+async function mapWithConcurrency<TInput, TResult>(
+  values: TInput[],
+  concurrency: number,
+  map: (value: TInput) => Promise<TResult>
+): Promise<TResult[]> {
+  const results = new Array<TResult>(values.length);
+  let nextIndex = 0;
+  const workers = Array.from({ length: Math.min(concurrency, values.length) }, async () => {
+    while (nextIndex < values.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await map(values[index]!);
+    }
+  });
+  await Promise.all(workers);
+  return results;
 }
 
 function searchCacheKey(

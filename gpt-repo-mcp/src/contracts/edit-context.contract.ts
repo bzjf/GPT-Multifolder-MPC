@@ -6,14 +6,14 @@ import { SearchResultSchema } from "./search.contract.js";
 export const EditContextInputSchema = RepoInputSchema
   .merge(GlobScopeSchema)
   .extend({
-    goal: z.string().min(1).describe("Short description of the edit or bugfix the caller is preparing."),
-    search_queries: z.array(z.string().min(1)).max(10).optional().describe("Exact identifiers, error text, function names, or file words to search before reading files. Omit only when known_paths or include_globs are enough."),
-    known_paths: z.array(z.string().min(1)).max(50).optional().describe("Repo-relative POSIX files already known to be relevant. These are read before search-derived candidates."),
-    max_search_results_per_query: z.number().int().positive().optional().describe("Maximum search hits to keep per query before selecting candidate files, capped by the server max_search_results limit."),
-    max_files_to_read: z.number().int().positive().optional().describe("Maximum candidate files to read in the bundled repo_read_many step, capped by the server max_files limit."),
-    max_bytes_per_file: z.number().int().positive().optional().describe("Per-file read budget for bundled file contents, capped by server configuration."),
-    max_total_bytes: z.number().int().positive().optional().describe("Total read budget for bundled file contents, capped by server configuration."),
-    context_lines: z.number().int().min(0).max(5).optional().describe("Search context lines per match. Keep low because file contents are read separately.")
+    goal: z.string().min(1).max(120).describe("Brief search intent for repo_edit_context, ideally 2-8 words. Name the code area and desired change only; omit background, reasoning, implementation details, acceptance criteria, and file lists."),
+    search_queries: z.array(z.string().min(1)).max(10).optional().describe("Up to 10 exact identifiers, error fragments, function names, or file words to search before reading files. Omit only when known_paths or include_globs are sufficient. Example: [\"WriteChangesToolInputSchema\", \"grouped edit\"]."),
+    known_paths: z.array(z.string().min(1)).max(50).optional().describe("Up to 50 repo-relative POSIX files already known to be relevant; these are read before search-derived candidates. Example: [\"src/contracts/write.contract.ts\"]."),
+    max_search_results_per_query: z.number().int().positive().optional().describe("Maximum search hits retained per query before candidate ranking. Defaults to 16 and is capped by the configured search-result limit."),
+    max_files_to_read: z.number().int().positive().optional().describe("Maximum candidate files to read in the bundled repo_read_many step. Defaults to 8 and is capped by the server max_files limit."),
+    max_bytes_per_file: z.number().int().positive().optional().describe("Maximum bytes returned for each candidate file. Omit to use the configured per-file limit; larger values are capped."),
+    max_total_bytes: z.number().int().positive().optional().describe("Total read budget for bundled file contents. Defaults to 300000 bytes and is capped by server configuration."),
+    context_lines: z.number().int().min(0).max(5).optional().describe("Search context lines per match. Defaults to 0 because selected file contents are read separately; context is removed when the full file is returned.")
   });
 
 export const EditContextSearchSchema = z.object({
@@ -36,8 +36,8 @@ export const EditContextResultSchema = z.object({
   repo_id: z.string().describe("Approved repository id used for this edit context."),
   goal: z.string().describe("Caller-provided edit or bugfix goal."),
   head_sha: z.string().optional().describe("Current git HEAD SHA when available."),
-  searches: z.array(EditContextSearchSchema).describe("Searches performed to discover likely edit files."),
-  candidate_paths: z.array(EditContextCandidateSchema).describe("Deduplicated candidate files selected from known paths and search hits."),
+  searches: z.array(EditContextSearchSchema).describe("Searches performed to discover likely edit files, compacted to the first read page of candidates."),
+  candidate_paths: z.array(EditContextCandidateSchema).describe("Deduplicated candidate files ranked by known-path status, distinct query coverage, hit count, and file type."),
   files: z.array(FileContentSchema).describe("Bundled file contents read from candidate paths."),
   skipped: z.array(z.object({
     path: z.string().describe("Candidate path that could not be read."),

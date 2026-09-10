@@ -1,10 +1,10 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
 import {
-  WriteFileActionSchema,
-  WriteChangesInputSchema,
+  WriteFileToolActionSchema,
+  WriteChangesToolInputSchema,
   WriteChangesResultSchema,
-  WriteFileInputSchema,
+  WriteFileToolInputSchema,
   WriteFileResultSchema
 } from "../../src/contracts/write.contract.js";
 import {
@@ -47,6 +47,48 @@ function schemaDescription(schema: unknown): string | undefined {
 }
 
 describe("tool catalog contracts", () => {
+  test("every MCP input field has a useful model-facing description", () => {
+    for (const tool of toolCatalog) {
+      for (const [field, schema] of Object.entries(tool.inputSchema.shape)) {
+        const description = schemaDescription(schema);
+        expect(description, `${tool.name}.${field} should have a field description`).toBeTypeOf("string");
+        expect(description?.length, `${tool.name}.${field} should have a useful field description`).toBeGreaterThan(20);
+      }
+    }
+  });
+
+  test("ambiguous MCP input fields include compact examples", () => {
+    const fields: Array<[string, string]> = [
+      ["repo_tree", "path"],
+      ["repo_search", "query"],
+      ["repo_search", "include_globs"],
+      ["repo_edit_context", "search_queries"],
+      ["repo_read_many", "paths"],
+      ["repo_project_brief", "include"],
+      ["repo_task_inventory", "labels"],
+      ["repo_decision_memory", "include_sources"],
+      ["repo_change_plan", "goal"],
+      ["repo_next_action", "mode"],
+      ["repo_plan_review", "prompt"],
+      ["codex_read_skill", "name"]
+    ];
+
+    for (const [toolName, field] of fields) {
+      const tool = toolCatalog.find((candidate) => candidate.name === toolName);
+      const shape = tool?.inputSchema.shape as Record<string, unknown> | undefined;
+      const schema = shape?.[field];
+      expect(schemaDescription(schema), `${toolName}.${field} should include an example`).toContain("Example:");
+    }
+  });
+
+  test("repo_fetch_file schema explains mutually exclusive selectors", () => {
+    const fetchFile = toolCatalog.find((tool) => tool.name === "repo_fetch_file");
+    const shape = fetchFile?.inputSchema.shape as Record<string, unknown> | undefined;
+    expect(schemaDescription(shape?.start_line)).toContain("not with byte_offset or cursor");
+    expect(schemaDescription(shape?.byte_offset)).toContain("Do not combine with start_line, end_line, or cursor");
+    expect(schemaDescription(shape?.cursor)).toContain("never combine it with line or byte selectors");
+  });
+
   test("all tools have required metadata and appropriate annotations", () => {
     expect(toolCatalog.map((tool) => tool.name)).toEqual([
       "repo_list_roots",
@@ -157,11 +199,11 @@ describe("tool catalog contracts", () => {
     expect(toolCatalog.some((tool) => (tool.name as string) === "repo_decision_log")).toBe(false);
     expect((toolContracts as Record<string, unknown>).repo_decision_log).toBeUndefined();
     expect(writeFile).toBeDefined();
-    expect(writeFile?.inputSchema).toBe(WriteFileInputSchema);
+    expect(writeFile?.inputSchema).toBe(WriteFileToolInputSchema);
     expect(writeFile?.outputSchema).toBe(WriteFileResultSchema);
     expect(writeFile?.annotations).toEqual(writeAnnotations);
     expect(writeChanges).toBeDefined();
-    expect(writeChanges?.inputSchema).toBe(WriteChangesInputSchema);
+    expect(writeChanges?.inputSchema).toBe(WriteChangesToolInputSchema);
     expect(writeChanges?.outputSchema).toBe(WriteChangesResultSchema);
     expect(writeChanges?.annotations).toEqual(writeAnnotations);
     expect(writeHandoff).toBeDefined();
@@ -255,17 +297,17 @@ describe("tool catalog contracts", () => {
       ["repo_last_write.receipt", LastWriteResultSchema.shape.receipt],
       ["repo_last_write.next_tool_payloads", LastWriteResultSchema.shape.next_tool_payloads],
       ["repo_last_write.warnings", LastWriteResultSchema.shape.warnings],
-      ["repo_write_file.repo_id", WriteFileInputSchema.shape.repo_id],
-      ["repo_write_file.path", WriteFileInputSchema.shape.path],
-      ["repo_write_file.action", WriteFileInputSchema.shape.action],
-      ["repo_write_file.content", WriteFileInputSchema.shape.content],
-      ["repo_write_file.find", WriteFileInputSchema.shape.find],
-      ["repo_write_file.replace", WriteFileInputSchema.shape.replace],
-      ["repo_write_file.start_line", WriteFileInputSchema.shape.start_line],
-      ["repo_write_file.end_line", WriteFileInputSchema.shape.end_line],
-      ["repo_write_file.create_dirs", WriteFileInputSchema.shape.create_dirs],
-      ["repo_write_file.dry_run", WriteFileInputSchema.shape.dry_run],
-      ["repo_write_file.reason", WriteFileInputSchema.shape.reason],
+      ["repo_write_file.repo_id", WriteFileToolInputSchema.shape.repo_id],
+      ["repo_write_file.path", WriteFileToolInputSchema.shape.path],
+      ["repo_write_file.action", WriteFileToolInputSchema.shape.action],
+      ["repo_write_file.content", WriteFileToolInputSchema.shape.content],
+      ["repo_write_file.find", WriteFileToolInputSchema.shape.find],
+      ["repo_write_file.replace", WriteFileToolInputSchema.shape.replace],
+      ["repo_write_file.start_line", WriteFileToolInputSchema.shape.start_line],
+      ["repo_write_file.end_line", WriteFileToolInputSchema.shape.end_line],
+      ["repo_write_file.create_dirs", WriteFileToolInputSchema.shape.create_dirs],
+      ["repo_write_file.dry_run", WriteFileToolInputSchema.shape.dry_run],
+      ["repo_write_file.reason", WriteFileToolInputSchema.shape.reason],
       ["repo_write_file.ok", WriteFileResultSchema.shape.ok],
       ["repo_write_file.path", WriteFileResultSchema.shape.path],
       ["repo_write_file.action", WriteFileResultSchema.shape.action],
@@ -281,10 +323,10 @@ describe("tool catalog contracts", () => {
     ]);
 
     expectFieldDescriptions([
-      ["repo_write_changes.repo_id", WriteChangesInputSchema.shape.repo_id],
-      ["repo_write_changes.changes", WriteChangesInputSchema.shape.changes],
-      ["repo_write_changes.dry_run", WriteChangesInputSchema.shape.dry_run],
-      ["repo_write_changes.reason", WriteChangesInputSchema.shape.reason],
+      ["repo_write_changes.repo_id", WriteChangesToolInputSchema.shape.repo_id],
+      ["repo_write_changes.changes", WriteChangesToolInputSchema.shape.changes],
+      ["repo_write_changes.dry_run", WriteChangesToolInputSchema.shape.dry_run],
+      ["repo_write_changes.reason", WriteChangesToolInputSchema.shape.reason],
       ["repo_write_changes.ok", WriteChangesResultSchema.shape.ok],
       ["repo_write_changes.dry_run", WriteChangesResultSchema.shape.dry_run],
       ["repo_write_changes.changed_paths", WriteChangesResultSchema.shape.changed_paths],
@@ -461,8 +503,19 @@ describe("tool catalog contracts", () => {
     ]);
   });
 
-  test("repo_write_changes schema accepts grouped same-file exact-match edits", () => {
-    const parsed = WriteChangesInputSchema.safeParse({
+  test("MCP write schemas reject hidden anchor actions", () => {
+    for (const action of ["replace", "insert_before", "insert_after"]) {
+      const singleFile = WriteFileToolInputSchema.safeParse({
+        repo_id: "fixture",
+        path: "src/app.ts",
+        action,
+        find: "const enabled = false;",
+        content: "const enabled = true;"
+      });
+      expect(singleFile.success).toBe(false);
+    }
+
+    const grouped = WriteChangesToolInputSchema.safeParse({
       repo_id: "fixture",
       changes: [
         {
@@ -477,28 +530,83 @@ describe("tool catalog contracts", () => {
       ]
     });
 
-    expect(parsed.error?.issues).toBeUndefined();
+    expect(grouped.success).toBe(false);
   });
 
   test("repo_write_changes schema tells callers to group repeated target paths", () => {
-    expect(schemaDescription(WriteChangesInputSchema.shape.changes)).toContain("Each path may appear at most once");
-    expect(schemaDescription(WriteChangesInputSchema.shape.changes)).toContain("one type=edit change");
-    expect(schemaDescription(WriteChangesInputSchema.shape.changes)).toContain("original pre-edit snapshot");
+    expect(schemaDescription(WriteChangesToolInputSchema.shape.changes)).toContain("Each path may appear at most once");
+    expect(schemaDescription(WriteChangesToolInputSchema.shape.changes)).toContain("one top-level type=edit change");
+    expect(schemaDescription(WriteChangesToolInputSchema.shape.changes)).toContain("as many currently known, safely planned, non-overlapping edits from the current snapshot as possible");
+    expect(schemaDescription(WriteChangesToolInputSchema.shape.changes)).toContain("Do not issue one known edit at a time with a re-read between writes merely to shift line coordinates");
+    expect(schemaDescription(WriteChangesToolInputSchema.shape.changes)).toContain("the only valid child types are replace_lines, insert_before_line, and insert_after_line");
+    expect(schemaDescription(WriteChangesToolInputSchema.shape.changes)).toContain("any combination of those three may be bundled");
+    expect(schemaDescription(WriteChangesToolInputSchema.shape.changes)).toContain("Never put write, append, prepend");
+    expect(schemaDescription(WriteChangesToolInputSchema.shape.changes)).toContain("another edit group, file creation, or a second path inside edits");
+    expect(schemaDescription(WriteChangesToolInputSchema.shape.changes)).toContain("same original pre-edit snapshot");
+    expect(schemaDescription(WriteChangesToolInputSchema.shape.changes)).toContain("no two items may target the same line or overlapping ranges");
+    expect(schemaDescription(WriteChangesToolInputSchema.shape.changes)).toContain("discard every coordinate from earlier reads");
+    expect(schemaDescription(WriteChangesToolInputSchema.shape.changes)).toContain("only for work that could not be safely planned in the original group");
+    expect(schemaDescription(WriteChangesToolInputSchema.shape.changes)).toContain("when verification finds a new issue");
+    expect(schemaDescription(WriteChangesToolInputSchema.shape.changes)).toContain("never manually offset stale line numbers");
+  });
+
+  test("repo_write_changes grouped schema requires fields for each line action", () => {
+    const validMixedGroup = WriteChangesToolInputSchema.safeParse({
+      repo_id: "fixture",
+      changes: [{
+        type: "edit",
+        path: "src/app.ts",
+        edits: [
+          { type: "replace_lines", start_line: 2, end_line: 3, content: "replacement\n" },
+          { type: "insert_before_line", start_line: 6, content: "before\n" },
+          { type: "insert_after_line", start_line: 9, content: "after\n" }
+        ]
+      }]
+    });
+    const missingStartLine = WriteChangesToolInputSchema.safeParse({
+      repo_id: "fixture",
+      changes: [{
+        type: "edit",
+        path: "src/app.ts",
+        edits: [{ type: "insert_before_line", content: "before\n" }]
+      }]
+    });
+    const missingContent = WriteChangesToolInputSchema.safeParse({
+      repo_id: "fixture",
+      changes: [{
+        type: "edit",
+        path: "src/app.ts",
+        edits: [{ type: "replace_lines", start_line: 2 }]
+      }]
+    });
+
+    expect(validMixedGroup.success).toBe(true);
+    expect(missingStartLine.success).toBe(false);
+    expect(missingContent.success).toBe(false);
   });
 
   test("write schemas prioritize 1-based line actions over patch-shaped edits", () => {
-    expect(WriteFileActionSchema.options.slice(0, 3)).toEqual([
+    expect(WriteFileToolActionSchema.options).toEqual([
       "replace_lines",
       "insert_before_line",
-      "insert_after_line"
+      "insert_after_line",
+      "write",
+      "append",
+      "prepend"
     ]);
-    expect(schemaDescription(WriteFileInputSchema.shape.action)).toContain("current lines were read");
-    expect(schemaDescription(WriteFileInputSchema.shape.start_line)).toContain("copied unchanged");
-    expect(schemaDescription(WriteChangesInputSchema.shape.changes)).toContain("not patch-shaped");
+    expect(schemaDescription(WriteFileToolInputSchema.shape.action)).toContain("current lines were read");
+    expect(schemaDescription(WriteFileToolInputSchema.shape.action)).toContain("discard all earlier line coordinates");
+    expect(schemaDescription(WriteFileToolInputSchema.shape.action)).toContain("re-read before another line-number write");
+    expect(schemaDescription(WriteFileToolInputSchema.shape.start_line)).toContain("copied unchanged");
+    expect(schemaDescription(WriteFileToolInputSchema.shape.start_line)).toContain("after the last successful write");
+    expect(schemaDescription(WriteFileToolInputSchema.shape.start_line)).toContain("re-read instead of manually offsetting");
+    expect(schemaDescription(WriteFileToolInputSchema.shape.end_line)).toContain("same fresh file snapshot as start_line");
+    expect(schemaDescription(WriteFileToolInputSchema.shape.end_line)).toContain("becomes stale after any successful write");
+    expect(schemaDescription(WriteChangesToolInputSchema.shape.changes)).toContain("line-number actions");
   });
 
   test("repo_write_changes schema accepts line-number edits", () => {
-    const parsed = WriteChangesInputSchema.safeParse({
+    const parsed = WriteChangesToolInputSchema.safeParse({
       repo_id: "fixture",
       changes: [
         {
@@ -521,21 +629,19 @@ describe("tool catalog contracts", () => {
 
     expect(parsed.error?.issues).toBeUndefined();
   });
-  test("repo_write_changes schema rejects unsupported grouped edit operations", () => {
-    const parsed = WriteChangesInputSchema.safeParse({
-      repo_id: "fixture",
-      changes: [
-        {
+  test("repo_write_changes schema rejects every non-allowlisted grouped edit type", () => {
+    for (const type of ["write", "append", "prepend", "replace", "insert_before", "insert_after", "edit"]) {
+      const parsed = WriteChangesToolInputSchema.safeParse({
+        repo_id: "fixture",
+        changes: [{
           type: "edit",
           path: "src/app.ts",
-          edits: [
-            { type: "append", find: "export function run() {", content: "unsupported\n" }
-          ]
-        }
-      ]
-    });
+          edits: [{ type, start_line: 1, content: "unsupported\n" }]
+        }]
+      });
 
-    expect(parsed.success).toBe(false);
+      expect(parsed.success).toBe(false);
+    }
   });
 
   test("repo_git_review schema accepts composite recover payloads", () => {
@@ -699,6 +805,7 @@ describe("tool catalog contracts", () => {
       max_search_results: 250,
       max_tree_entries: 5000,
       max_depth: 12,
+      default_diff_bytes: 32000,
       max_diff_bytes: 512000
     });
     expect(raw).not.toContain("/absolute/path/to/repo");
@@ -758,12 +865,16 @@ describe("tool catalog contracts", () => {
     expect(missingFileFields.success).toBe(false);
   });
 
-  test("repo_git_diff advertises minimal first-call guidance", () => {
+  test("repo_git_diff advertises path-batched guidance", () => {
     const gitDiff = toolCatalog.find((tool) => tool.name === "repo_git_diff");
 
-    expect(gitDiff?.description).toContain("Default first call should pass only repo_id");
-    expect(gitDiff?.description).toContain("Do not include staged, unstaged, paths, max_bytes, or context_lines on the first pass");
+    expect(gitDiff?.description).toContain("Prefer repo_git_status first");
+    expect(gitDiff?.description).toContain("usually 1-5 related files per call");
+    expect(gitDiff?.description).toContain("Do not request one whole-repository diff");
+    expect(schemaDescription(gitDiff!.inputSchema.shape.paths)).toContain("usually 1-5 files per call");
+    expect(schemaDescription(gitDiff!.inputSchema.shape.paths)).toContain("Do not pass every changed path at once");
     expect(schemaDescription(gitDiff!.inputSchema.shape.max_bytes)).toContain("Second-pass refinement");
+    expect(schemaDescription(gitDiff!.inputSchema.shape.max_bytes)).toContain("first reduce the paths batch");
     expect(schemaDescription(gitDiff!.inputSchema.shape.context_lines)).toContain("Omit on the first diff call");
   });
 
@@ -964,7 +1075,7 @@ describe("tool catalog contracts", () => {
             "openWorldHint": false,
             "readOnlyHint": true,
           },
-          "description": "Use this when the user asks to edit, fix, debug, or implement code and likely files are not fully known. Combines bounded search, candidate selection, batched repo_read_many file reads, and git HEAD in one read-only call so the next step can usually be repo_write_changes.",
+          "description": "Use this when the user asks to edit, fix, debug, or implement code and likely files are not fully known. Batches compatible queries into one repository scan, ranks candidates, returns a compact first page of file contents, and includes git HEAD so the next step can usually be repo_write_changes.",
           "inputKeys": [
             "context_lines",
             "exclude_globs",
@@ -1117,7 +1228,7 @@ describe("tool catalog contracts", () => {
             "openWorldHint": false,
             "readOnlyHint": true,
           },
-          "description": "Use this when the user asks to review changes or inspect a git diff. Default first call should pass only repo_id. Do not include staged, unstaged, paths, max_bytes, or context_lines on the first pass. Use optional filters only after the default diff is truncated, too broad, or the user asks for a specific comparison.",
+          "description": "Use this when the user asks to inspect git changes. Prefer repo_git_status first to obtain changed paths, then call repo_git_diff repeatedly with small coherent paths batches, usually 1-5 related files per call. Do not request one whole-repository diff when multiple changed paths are known. Omit paths only when status shows very few changed files or the user explicitly requests the whole comparison. Keep the compact default max_bytes; if truncated, reduce the path batch before increasing max_bytes.",
           "inputKeys": [
             "base",
             "compare",
@@ -1740,7 +1851,7 @@ describe("tool catalog contracts", () => {
             "openWorldHint": false,
             "readOnlyHint": false,
           },
-          "description": "Use this when the user explicitly asks to apply a cohesive multi-file edit pack. Existing text with known lines must use line-number actions, not apply_patch-shaped exact-text edits. Grouped line coordinates all refer to the original pre-edit snapshot; the server applies non-overlapping edits bottom-up. Preserves CRLF/LF style. Requires user approval, repo opt-in, and never runs shell, git, stage, commit, or restore.",
+          "description": "Use this when the user explicitly asks to apply a cohesive multi-file edit pack. Each path may appear once. Before writing, batch as many currently known, safely planned, non-overlapping line edits for one existing file as possible into one top-level type=edit group; do not alternate one known edit with a re-read merely to shift line numbers. Its edits array accepts exactly replace_lines, insert_before_line, and insert_after_line; any combination of those three may be bundled, up to 25. No other child type is valid: write, append, prepend, exact-text actions, nested edit groups, file creation, and another path are forbidden. All coordinates come from the same original pre-edit snapshot; target lines or ranges cannot overlap, including two insertions at the same line, and the server applies edits bottom-up. Re-read after writing only for work that could not be planned safely in the original group or when verification finds a new issue. Preserves CRLF/LF style. Requires user approval, repo opt-in, and never runs shell, git, stage, commit, or restore.",
           "inputKeys": [
             "changes",
             "dry_run",

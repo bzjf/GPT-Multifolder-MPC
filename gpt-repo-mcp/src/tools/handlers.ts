@@ -129,14 +129,15 @@ export const searchHandler: ToolHandler = async (input, context) => safeTool<Sea
 export const editContextHandler: ToolHandler = async (input, context) => safeTool<EditContextInput>("repo_edit_context", input, context, async (args) => {
   const repo = context.registry.get(args.repo_id);
   const sandbox = new PathSandbox(repo.root);
-  const result = await new EditContextService(repo.root, sandbox, context.registry.limits).context(args);
+  const { result, metrics } = await new EditContextService(repo.root, sandbox, context.registry.limits).context(args);
   audit({
     tool: "repo_edit_context",
     repo_id: args.repo_id,
     paths: result.files.map((file) => file.path),
     counts: { searches: result.searches.length, candidates: result.candidate_paths.length, files: result.returned_file_count },
     truncated: result.truncated,
-    warnings: result.warnings
+    warnings: result.warnings,
+    details: metrics
   });
   return createSuccessEnvelope(result, `Prepared edit context with ${result.returned_file_count} files.`, { warnings: result.warnings });
 });

@@ -7,9 +7,9 @@ export const TaskKindSchema = z.enum(["todo", "fixme", "hack", "checkbox", "road
 export const TaskInventoryInputSchema = RepoInputSchema
   .merge(GlobScopeSchema)
   .extend({
-    labels: z.array(TaskKindSchema).optional(),
-    max_results: z.number().int().positive().optional(),
-    cursor: z.string().optional()
+    labels: z.array(TaskKindSchema).optional().describe("Task marker kinds to return. Omit to include todo, fixme, hack, checkbox, and roadmap. Example: [\"todo\", \"fixme\"]."),
+    max_results: z.number().int().positive().optional().describe("Maximum task markers to return on this page. Omit to use the configured search-result limit; larger values are capped."),
+    cursor: z.string().optional().describe("Opaque next_cursor from the previous repo_task_inventory page with the same filters. Omit on the first page; never invent or modify it.")
   });
 
 export const TaskInventoryItemSchema = z.object({

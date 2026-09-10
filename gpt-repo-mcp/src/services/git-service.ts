@@ -63,10 +63,11 @@ export class GitService {
     }
     if (paths?.length) args.push("--", ...paths);
 
-    const maxBytes = Math.min(options.max_bytes ?? this.limits.max_diff_bytes, this.limits.max_diff_bytes);
+    const maxBytes = Math.min(options.max_bytes ?? this.limits.default_diff_bytes, this.limits.max_diff_bytes);
     const raw = await this.runCommand(args, this.limits.max_diff_bytes + 1);
     const truncated = Buffer.byteLength(raw) > maxBytes;
-    const text = truncated ? raw.slice(0, maxBytes) : raw;
+    const text = truncated ? truncateUtf8(raw, maxBytes) : raw;
+    const canIncreaseLimit = maxBytes < this.limits.max_diff_bytes;
     return {
       base: options.base,
       compare: options.compare,
@@ -75,7 +76,9 @@ export class GitService {
       files: parseDiff(text),
       truncated,
       warnings: truncated
-        ? [`Diff truncated by max_bytes (${maxBytes}). Increase max_bytes or pass paths to narrow the diff before reviewing.`]
+        ? [canIncreaseLimit
+            ? `Diff truncated by max_bytes (${maxBytes}). Prefer paths to narrow the diff, or increase max_bytes up to ${this.limits.max_diff_bytes}.`
+            : `Diff truncated at the configured max_diff_bytes (${this.limits.max_diff_bytes}). Pass paths to narrow the diff.`]
         : []
     };
   }
@@ -93,6 +96,21 @@ export class GitService {
       throw new RepoReaderError("GIT_ERROR", message);
     }
   }
+}
+
+function truncateUtf8(value: string, maxBytes: number): string {
+  const bytes = Buffer.from(value, "utf8");
+  let end = Math.min(maxBytes, bytes.length);
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+
+  while (end > 0) {
+    try {
+      return decoder.decode(bytes.subarray(0, end));
+    } catch {
+      end -= 1;
+    }
+  }
+  return "";
 }
 
 type StatusFile = {

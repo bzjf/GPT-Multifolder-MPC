@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 export const PlanReviewInputSchema = z.object({
-  prompt: z.string().min(1)
+  prompt: z.string().min(1).describe("The user's repository request to classify for scope and next-tool selection. Pass the request itself, not an expanded plan. Example: \"Review the authentication changes.\"")
 });
 
 export const PlanReviewResultSchema = z.object({

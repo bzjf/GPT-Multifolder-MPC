@@ -3,16 +3,16 @@ import { z } from "zod";
 export const CodexSkillSourceSchema = z.enum(["user", "system", "plugin"]);
 
 export const CodexSkillsInputSchema = z.object({
-  include_user: z.boolean().optional().describe("Include skills under CODEX_HOME/skills outside .system."),
-  include_system: z.boolean().optional().describe("Include bundled system skills under CODEX_HOME/skills/.system."),
-  include_plugins: z.boolean().optional().describe("Include plugin-provided skills under CODEX_HOME/plugins/cache."),
-  max_results: z.number().int().positive().optional().describe("Maximum number of skills to return before truncating.")
+  include_user: z.boolean().optional().describe("Include user skills under CODEX_HOME/skills outside .system. Defaults to true."),
+  include_system: z.boolean().optional().describe("Include bundled skills under CODEX_HOME/skills/.system. Defaults to true."),
+  include_plugins: z.boolean().optional().describe("Include plugin-provided skills under CODEX_HOME/plugins/cache. Defaults to true."),
+  max_results: z.number().int().positive().optional().describe("Maximum skills to return. Defaults to 400 and is capped at 1000.")
 });
 
 export const CodexReadSkillInputSchema = z.object({
-  name: z.string().min(1).describe("Skill frontmatter name from codex_list_skills. Paths are not accepted."),
-  source: CodexSkillSourceSchema.optional().describe("Optional source filter when more than one skill has the same name."),
-  max_bytes: z.number().int().positive().optional().describe("Maximum SKILL.md bytes to return before truncating.")
+  name: z.string().min(1).describe("Exact skill frontmatter name returned by codex_list_skills; filesystem paths are not accepted. Example: \"mcp-builder\"."),
+  source: CodexSkillSourceSchema.optional().describe("Source filter used only to disambiguate duplicate names: user, system, or plugin. Example: \"user\"."),
+  max_bytes: z.number().int().positive().optional().describe("Maximum SKILL.md bytes to return. Defaults to 512000 and is capped at 2000000.")
 });
 
 export const CodexSkillSummarySchema = z.object({

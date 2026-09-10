@@ -20,7 +20,7 @@ import { PlanReviewInputSchema, PlanReviewResultSchema } from "../contracts/revi
 import { SearchInputSchema, SearchResponseSchema } from "../contracts/search.contract.js";
 import { TaskInventoryInputSchema, TaskInventoryResultSchema } from "../contracts/task.contract.js";
 import { RepoTreeResultSchema } from "../contracts/tree.contract.js";
-import { WriteChangesInputSchema, WriteChangesResultSchema, WriteFileInputSchema, WriteFileResultSchema } from "../contracts/write.contract.js";
+import { WriteChangesResultSchema, WriteChangesToolInputSchema, WriteFileResultSchema, WriteFileToolInputSchema } from "../contracts/write.contract.js";
 
 export type ToolName =
   | "repo_list_roots"
@@ -199,11 +199,11 @@ export const toolContracts = {
     output: CodexReviewResultSchema
   },
   repo_write_file: {
-    input: WriteFileInputSchema,
+    input: WriteFileToolInputSchema,
     output: WriteFileResultSchema
   },
   repo_write_changes: {
-    input: WriteChangesInputSchema,
+    input: WriteChangesToolInputSchema,
     output: WriteChangesResultSchema
   },
   repo_write_handoff: {

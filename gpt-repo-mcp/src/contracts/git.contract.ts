@@ -8,8 +8,8 @@ export const GitDiffInputSchema = RepoInputSchema.extend({
   compare: z.string().optional().describe("Second-pass refinement for comparing to a specific ref. Omit on the first diff call."),
   staged: z.boolean().optional().describe("Second-pass refinement to focus on staged changes only. Omit on the first diff call."),
   unstaged: z.boolean().optional().describe("Second-pass refinement to focus on unstaged changes only. Omit on the first diff call."),
-  paths: z.array(z.string()).optional().describe("Second-pass refinement for explicit repo-relative paths. Omit on the first diff call unless the user asks for specific paths."),
-  max_bytes: z.number().int().positive().optional().describe("Second-pass refinement for output size when the default diff is truncated or too broad. Omit on the first diff call."),
+  paths: z.array(z.string()).optional().describe("Preferred selector for explicit repo-relative changed paths. First call repo_git_status, then request diff in small coherent path batches, usually 1-5 files per call. Do not pass every changed path at once. Omit only when status shows very few changed files or the user explicitly requests a whole-repository comparison."),
+  max_bytes: z.number().int().positive().optional().describe("Second-pass refinement for the raw diff byte budget. Omit on the first diff call to use the compact configured default (32000 bytes by default). After truncation, first reduce the paths batch; increase max_bytes only when one small batch still needs more content, up to the configured hard limit (512000 bytes by default)."),
   context_lines: z.number().int().min(0).max(20).optional().describe("Second-pass refinement for hunk context when the default diff needs more or less context. Omit on the first diff call.")
 });
 

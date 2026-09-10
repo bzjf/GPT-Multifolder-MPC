@@ -45,6 +45,7 @@ export const LimitsConfigSchema = z.object({
   max_change_plan_files: PositiveIntSchema.optional(),
   max_change_plan_tree_pages: PositiveIntSchema.optional(),
   max_depth: PositiveIntSchema.optional(),
+  default_diff_bytes: PositiveIntSchema.optional(),
   max_diff_bytes: PositiveIntSchema.optional()
 }).passthrough();
 

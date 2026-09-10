@@ -1,6 +1,6 @@
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { RootRegistry } from "../../src/services/root-registry.js";
 import { editContextHandler } from "../../src/tools/handlers.js";
 import { createRepoFixture } from "./fixtures/repo-fixture.js";
@@ -78,5 +78,109 @@ describe("repo_edit_context", () => {
       returned_file_count: 25,
       truncated: false
     });
+  });
+
+  test("ranks candidates and removes search context duplicated by returned files", async () => {
+    const { fixture, context } = await createContext();
+    await writeFile(join(fixture.root, "src", "multi.ts"), "alpha beta alpha\n");
+    await writeFile(join(fixture.root, "src", "single.ts"), "alpha\n");
+
+    const response = await editContextHandler({
+      repo_id: "fixture",
+      goal: "Rank edit candidates",
+      search_queries: ["alpha", "beta"],
+      known_paths: ["docs/guide.md"],
+      max_files_to_read: 2,
+      context_lines: 2
+    }, context);
+
+    const payload = response.structuredContent as {
+      candidate_paths: Array<{ path: string; reason: string }>;
+      files: Array<{ path: string }>;
+      searches: Array<{ results: Array<{ path: string; before: string[]; after: string[] }> }>;
+    };
+    expect(payload.candidate_paths.slice(0, 3).map((candidate) => candidate.path)).toEqual([
+      "docs/guide.md",
+      "src/multi.ts",
+      "src/single.ts"
+    ]);
+    expect(payload.candidate_paths[1]?.reason).toContain("across 2 queries");
+    expect(payload.files.map((file) => file.path)).toEqual(["docs/guide.md", "src/multi.ts"]);
+    expect(payload.searches.flatMap((search) => search.results)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: "src/multi.ts", before: [], after: [] })
+    ]));
+    expect(payload.searches.flatMap((search) => search.results).some((match) => match.path === "src/single.ts")).toBe(false);
+  });
+
+  test("uses compact defaults and provides a cursor for remaining ranked candidates", async () => {
+    const fixture = await createRepoFixture();
+    const knownPaths = Array.from({ length: 10 }, (_, index) => `docs/default-${index}.md`);
+    await Promise.all(knownPaths.map((path, index) =>
+      writeFile(join(fixture.root, path), `default file ${index}\n`)
+    ));
+    const registry = await RootRegistry.fromConfig({
+      repos: [{ repo_id: "fixture", display_name: "Fixture", root: fixture.root }],
+      limits: { max_files: 20, max_bytes_per_file: 256_000, max_total_bytes: 1_500_000 }
+    });
+
+    const response = await editContextHandler({
+      repo_id: "fixture",
+      goal: "Read default context page",
+      search_queries: ["missing-default-marker"],
+      known_paths: knownPaths
+    }, { registry });
+
+    const payload = response.structuredContent as {
+      returned_file_count: number;
+      truncated: boolean;
+      next_cursor?: string;
+      next_tool_hints: {
+        repo_read_many?: { paths?: string[]; max_files?: number; max_total_bytes?: number; cursor?: string };
+      };
+    };
+    expect(payload.returned_file_count).toBe(8);
+    expect(payload.truncated).toBe(true);
+    expect(payload.next_cursor).toBe("8");
+    expect(payload.next_tool_hints.repo_read_many).toMatchObject({
+      paths: knownPaths,
+      max_files: 8,
+      max_total_bytes: 300_000,
+      cursor: "8"
+    });
+  });
+
+  test("audits edit-context phase timings, result size, and search backend", async () => {
+    const { context } = await createContext();
+    const originalFormat = process.env.GPT_REPO_LOG_FORMAT;
+    process.env.GPT_REPO_LOG_FORMAT = "json";
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const response = await editContextHandler({
+        repo_id: "fixture",
+        goal: "Inspect raw fetch",
+        search_queries: ["rawFetch"],
+        known_paths: ["src/app.ts"]
+      }, context);
+
+      const lines = error.mock.calls.map((call) => String(call[0] ?? ""));
+      const auditLine = lines.find((line) => line.includes('"tool":"repo_edit_context"')) ?? "{}";
+      const event = JSON.parse(auditLine) as {
+        details?: Record<string, string | number>;
+      };
+      expect(event.details).toMatchObject({
+        search_ms: expect.any(Number),
+        read_ms: expect.any(Number),
+        git_head_ms: expect.any(Number),
+        result_bytes: Buffer.byteLength(JSON.stringify(response.structuredContent), "utf8"),
+        search_backend: expect.stringMatching(/^(ripgrep|typescript)$/)
+      });
+    } finally {
+      error.mockRestore();
+      if (originalFormat === undefined) {
+        delete process.env.GPT_REPO_LOG_FORMAT;
+      } else {
+        process.env.GPT_REPO_LOG_FORMAT = originalFormat;
+      }
+    }
   });
 });

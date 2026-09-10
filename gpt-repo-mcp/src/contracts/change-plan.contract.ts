@@ -9,9 +9,9 @@ export const ChangePlanCostSchema = z.enum(["small", "medium", "large"]);
 export const ChangePlanInputSchema = RepoInputSchema
   .merge(GlobScopeSchema.pick({ include_globs: true }))
   .extend({
-    goal: z.string().min(1),
-    max_files_to_inspect: z.number().int().positive().optional(),
-    planning_depth: PlanningDepthSchema.optional()
+    goal: z.string().min(1).describe("Concise one-sentence planning target. Keep only the essential subsystem, constraint, and intended outcome; omit background narrative and step-by-step instructions. This text directly affects file ranking and generated plan content. Example: \"Clarify grouped edit schema constraints.\""),
+    max_files_to_inspect: z.number().int().positive().optional().describe("Maximum ranked files to include in the plan. Omit for the planning_depth default: quick 12, standard 30, or deep 60; the configured server limit still applies."),
+    planning_depth: PlanningDepthSchema.optional().describe("Planning breadth: quick inspects up to 12 ranked files, standard up to 30 and is the default, and deep up to 60 before server caps.")
   });
 
 export const ChangePlanResultSchema = z.object({

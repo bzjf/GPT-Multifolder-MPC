@@ -14,6 +14,7 @@ export const DEFAULT_LIMITS = {
   max_change_plan_files: 60,
   max_change_plan_tree_pages: 10,
   max_depth: 12,
+  default_diff_bytes: 32_000,
   max_diff_bytes: 512_000
 } as const;
 

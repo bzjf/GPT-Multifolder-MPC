@@ -16,12 +16,12 @@ export const CodexTaskInputSchema = RepoInputSchema.extend({
   allowed_paths: RepoPathListSchema.describe("Repo-relative files or globs Codex may edit."),
   forbidden_paths: RepoPathListSchema.describe("Repo-relative files or globs Codex must not edit."),
   implementation_scope: z.object({
-    include: z.array(z.string().min(1)).default([]),
-    exclude: z.array(z.string().min(1)).default([])
-  }).optional().describe("Explicit implementation boundaries."),
+    include: z.array(z.string().min(1)).default([]).describe("Concrete behavior or components included in the delegated implementation. Example: [\"schema descriptions\", \"contract tests\"]."),
+    exclude: z.array(z.string().min(1)).default([]).describe("Concrete behavior or components explicitly out of scope. Example: [\"service runtime logic\"].")
+  }).optional().describe("Explicit implementation boundaries. Omit when allowed_paths, forbidden_paths, and the objective already define the scope."),
   acceptance_criteria: z.array(z.string().min(1)).default([]).describe("Criteria Codex should satisfy before finishing."),
   verification_commands: z.array(z.string().min(1)).default([]).describe("Commands Codex should run when feasible and report in RESULT.md."),
-  run_id: CodexRunIdSchema.optional()
+  run_id: CodexRunIdSchema.optional().describe("Optional existing or caller-chosen repo-local Codex run id matching YYYY-MM-DDTHHMMSSZ-slug. Omit to generate one from the task title.")
 });
 
 export const CodexTaskWriteInputSchema = CodexTaskInputSchema.extend({

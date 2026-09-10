@@ -5,7 +5,7 @@ const NonEmptyStringSchema = z.string().min(1);
 
 export const HandoffNextStepSchema = z.object({
   title: NonEmptyStringSchema.describe("Short title for the next concrete step."),
-  goal: z.string().min(1).optional().describe("The intended outcome for this step."),
+  goal: z.string().min(1).optional().describe("Optional one-sentence intended outcome for this step. Keep it short; put completion details in done_when and broader context in the handoff fields."),
   done_when: z.string().min(1).optional().describe("Concrete completion condition for this step.")
 });
 

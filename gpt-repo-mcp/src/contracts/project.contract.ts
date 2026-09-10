@@ -4,7 +4,7 @@ import { RepoInputSchema } from "./repo.contract.js";
 export const ProjectBriefIncludeSchema = z.enum(["package", "readme", "architecture", "scripts", "recent_git", "todos"]);
 
 export const ProjectBriefInputSchema = RepoInputSchema.extend({
-  include: z.array(ProjectBriefIncludeSchema).optional()
+  include: z.array(ProjectBriefIncludeSchema).optional().describe("Project signals to collect. Omit to include package, readme, architecture, scripts, recent_git, and todos. Example: [\"package\", \"scripts\", \"readme\"].")
 });
 
 export const ProjectBriefResultSchema = z.object({

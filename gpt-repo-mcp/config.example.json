@@ -8,6 +8,7 @@
     "max_search_results": 250,
     "max_tree_entries": 5000,
     "max_depth": 12,
+    "default_diff_bytes": 32000,
     "max_diff_bytes": 512000
   }
 }
